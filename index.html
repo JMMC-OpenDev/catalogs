@@ -1,15 +1,50 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <div xmlns="http://www.w3.org/1999/xhtml" data-template="templates:surround" data-template-with="templates/page.html" data-template-at="content">
-    <div class="col-md-9">
+    <div class="col-md-12">
         <h1 data-template="config:app-title">Generated page</h1>
         <div class="row">
             <div class="col-md-12">
-                <div data-template="app:test"/>
+                <div data-template="app:catalogs-table"/>
             </div>
         </div>
-    </div>
-    <div class="col-md-3">
-        <h2>Application Info</h2>
-        <div data-template="config:app-info"/>
+        
+        <div class="row">
+            <div class="col-md-12">
+                <h2/>
+                <p/>
+                <h2>API</h2>
+                <p>This application provides access to the catalog at given REST endpoint URL:<br/>
+                TBD
+                <br/>
+                You can read and write content using json data. Mapping with python structures is very easy using lists and dictionnaries. Beacause a mapping is done to relational database column identifier are case insensitive. We strongly encourage to <b>use lower case keys</b>.
+                <br/>
+                <code>catalog.updateRow(10, {"col1":1} )           # properly update content is col1 is a valid column name</code>
+                    <br/>
+                <code>catalog.updateRow(10, {"COL1":2} )           # performed the same update as before</code>
+                    <br/>
+                <code>catalog.updateRow(10, {"col1":1, "COL1":2} ) # throws an ERROR: multiple assignments to same c<br/>olumn "col1"</code>
+                
+                </p>
+                <h3>Access permissions</h3>
+                <p>
+                Permission access rights are defined per catalogs and relies on <a href="https://apps.jmmc.fr/accounts">JMMC accounts</a>
+                <br/>
+                TODO:
+                    <ul>
+                    <li>Give more information to describe specific access :  READ / WRITE / UPDATE / INSERT </li>
+                    <li>And enhance code to improve access control at such granularity.</li>
+                    </ul>
+                </p>
+                <h3>ADMIN level</h3>
+                <p>Most catalogs use PI names to define fine grain permissions of associated records. 
+                PI names values must be linked to JMMC account ids to grant access. A single JMMC account may be associated to multiple PI values, e.g. ESO &amp; CHARA account. Delegations can be set on request <a href="//www.jmmc.fr">PROVIDE LINK HERE...</a>.
+                </p>
+                
+                <h3>PI level</h3>
+                <p>Admin accesses relies on JMMC groups to grant R&amp;W permissions, e.g. members of the <em>oidb</em> group will get admin access to every <em>oidb</em> or <em>oidb_datalink</em> catalogs.
+                </p>
+                
+            </div>
+        </div>
     </div>
 </div>

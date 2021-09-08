@@ -27,7 +27,11 @@ else if (ends-with($exist:resource, ".html")) then
         </view>
 		<error-handler>
 			<forward url="{$exist:controller}/error-page.html" method="get"/>
-			<forward url="{$exist:controller}/modules/view.xql"/>
+			<forward url="{$exist:controller}/modules/view.xql">
+			    <set-header name="Cache-Control" value="no-cache, no-store, must-revalidate"/>
+                <set-header name="Pragma" value="no-cache"/>
+                <set-header name="Expires" value="0"/>
+			</forward>
 		</error-handler>
     </dispatch>
 (: Resource paths starting with $shared are loaded from the shared-resources app :)

@@ -5,10 +5,17 @@ module namespace app="http://exist.jmmc.fr/catalogs/templates";
 import module namespace templates="http://exist-db.org/xquery/templates" ;
 import module namespace config="http://exist.jmmc.fr/catalogs/config" at "config.xqm";
 
+import module namespace oidb-config="http://apps.jmmc.fr/exist/apps/oidb/config" at "../../oidb/modules/config.xqm";
+
+
 import module namespace sql-utils="http://apps.jmmc.fr/exist/apps/oidb/sql-utils" at "../../oidb/modules/sql-utils.xql";
 import module namespace log="http://apps.jmmc.fr/exist/apps/oidb/log" at "../../oidb/modules/log.xqm";
 import module namespace adql="http://apps.jmmc.fr/exist/apps/oidb/adql" at "../../oidb/modules/adql.xqm";
-import module namespace tap="http://apps.jmmc.fr/exist/apps/oidb/tap" at "../../oidb/modules/tap.xqm";
+import module namespace oidb-tap="http://apps.jmmc.fr/exist/apps/oidb/tap" at "../../oidb/modules/tap.xqm";
+
+import module namespace jmmc-tap="http://exist.jmmc.fr/jmmc-resources/tap" at "/db/apps/jmmc-resources/content/jmmc-tap.xql";
+
+
 
 import module namespace sql="http://exist-db.org/xquery/sql";
 
@@ -18,7 +25,7 @@ declare namespace rest="http://exquery.org/ns/restxq";
 
 declare namespace xsns="http://www.w3.org/2001/XMLSchema";
 
-
+declare variable $app:ACCESS_LABEL := map { true() : "" , false() : <i class="glyphicon glyphicon-lock" aria-hidden="true"/>};
 (: 
  : - try not to return 500 errors and prefer 400 so the client will consume and not loop over with retries
  : - check authentication for every sensible operations :
@@ -26,29 +33,170 @@ declare namespace xsns="http://www.w3.org/2001/XMLSchema";
  :     - modify content
  : TODO add a version on api ?
  : TODO separate low level code from api ? move code in catalogs anyway...
+ : TODO add constant for errors
+ : TODO enhance a rest xml response function : (@reason is not forwarded to python caller. -> add error in json response)
+ : 
+ : TODO document that  our approach relies on the fact that every cats have a single primary key used for update statements
  :)
 
 (:~
- : This is a sample templating function. It will be called by the templating module if
- : it encounters an HTML element with an attribute: data-template="app:test" or class="app:test" (deprecated). 
- : The function has to take 2 default parameters. Additional parameters are automatically mapped to
- : any matching request or function parameter.
+ : Generates main table of catalogs.
  : 
  : @param $node the HTML node with the attribute which triggered this call
  : @param $model a map containing arbitrary data - used to pass information between template calls
  :)
-declare function app:test($node as node(), $model as map(*)) {
+declare function app:catalogs-table($node as node(), $model as map(*)) {
     <div>
-        <h3>Tables</h3>
+        <h2>Catalog list</h2>
         <div>
-            <table class="table table-rows">
+            <table id="mixedtable" class="display table table-bordered nowrap">
+            <thead><tr><th>Name</th><th>Description</th><th>Access</th></tr></thead>
+            <tbody>
             {
-                map:for-each( app:get-catalogs(), function ($k,$v) { <tr><td>{$k}</td><td>{$v}</td></tr> } )
+                let $cats := app:get-catalogs()
+                for $name in map:keys($cats) order by $name
+                    let $desc := $cats($name)
+                    return
+                        <tr><td><a href="show.html?name={$name}">{$name}</a></td><td>{$desc}</td><td>{$app:ACCESS_LABEL(app:is-public($name))}</td></tr> 
             }
+            </tbody>
             </table>
         </div>
     </div>
 };
+
+(:~
+ : Generates main table of catalogs.
+ : 
+ : @param $node the HTML node with the attribute which triggered this call
+ : @param $model a map containing arbitrary data - used to pass information between template calls
+ :)
+declare function app:show-catalog($node as node(), $model as map(*), $name as xs:string) {
+    let $primary-key := app:get-catalog-primary-key($name)
+    let $metadata := app:get-metadata($name)
+(:    :)
+    let $keys := distinct-values( ("name", "description"))
+    let $keys := distinct-values( ("name", "description",  array:for-each($metadata , function ($m) { map:keys($m) } )))
+    return 
+    <div>
+        <h1>{$name} catalog </h1>
+        {if(app:is-public($name)) then () else <h3>Content access is restricted {$app:ACCESS_LABEL(app:is-public($name))}</h3>}
+        {if(exists($primary-key)) then <div><h3>Catalog's primary key : <b>{$primary-key}</b></h3><p> Please use {$primary-key} as key for your record's updates.</p></div> else ()}
+        <h2>Column descriptions</h2>
+        <div>
+            <table id="mixedtable" class="display table table-bordered nowrap">
+            <thead><tr>{for $key in $keys return <th>{$key}</th>}</tr></thead>
+            <tbody>
+            {
+                for $meta in $metadata?*
+                return
+                    <tr>{
+                        let $elname := if( $primary-key=$meta?name) then "b" else "span"
+                        for $key in $keys return <td>{element {$elname} {$meta($key)}}</td>}</tr>
+            }
+            </tbody>
+            </table>
+        </div>
+    </div>
+ 
+(:    return <pre>TODO</pre>:)
+};
+
+declare function app:get-metadata($name){
+    (: ask for 0 data but metadata ( query result is cached ) :)
+    let $res := jmmc-tap:tap-adql-query($oidb-config:TAP_SYNC,"SELECT TOP 0 * FROM "||$name, (), "application/json")
+    return $res?metadata
+};
+
+declare function app:get-catalog-primary-key($catalog-name){
+    if(starts-with($catalog-name, "spica_"))
+    then 
+        "spicadb_id"
+    else 
+        "id"
+};
+
+declare function app:is-public($catalog-name as xs:string)
+{
+    (: TODO finish implementation:  handle groups and read config from catalog metadata ... :)
+    
+    (: mockup :)
+    let $public-cats := ("oidb")
+    return starts-with($catalog-name, $public-cats)
+};    
+            
+
+declare function app:has-access($catalog-name as xs:string, $mode as xs:string)
+{
+    (: TODO finish implementation:  handle groups and read config from catalog metadata ... :)
+    
+    (: mockup :)
+    let $public-cats := ("oidb")
+    let $public := starts-with($catalog-name, $public-cats)
+    return 
+        if( $public ) then 
+            true()
+        else
+            (: TODO replace is authenticated by  is-pi-or-delegated-user() :)
+            let $isaut := try {app:is-authenticated()} catch * {false()}
+            let $isadm := try {app:is-admin($catalog-name)} catch * {false()}
+            return 
+                if ( $isaut or $isadm ) then 
+                    true()
+                else 
+                    let $reason := "Catalog is not public"
+                    return error(
+                            xs:QName("app:rest-error"), $reason,
+                            app:rest-response(401,$reason,<http:header name="Www-Authenticate" value='Basic realm="jmmc account"'/>,()) 
+                            )
+};
+
+
+declare function app:has-row-access($catalog-name as xs:string, $id as xs:integer, $mode as xs:string)
+{
+    if(app:is-public($catalog-name)) then 
+        true()
+    else
+        let $is-admin := try{ let $t := app:is-admin($catalog-name) return true() } catch * { false() }
+        return 
+            if ($is-admin) then 
+                true()
+            else if (false()) then (: TODO get pi of this row and crosscheck with associated accounts :)
+                true()
+            else 
+                let $reason := "Operation restricted to record's owner, delegated users or admins" (: Can we show here the PI value :)
+                return error(
+                        xs:QName("app:rest-error"), $reason,
+                        <rest:response><http:response status="401" reason="{$reason}"></http:response></rest:response> 
+                        )
+};
+
+declare function app:is-authenticated() {
+    (: SHOULD we restrict to external authentication or is authenticated is fine ? :)
+    if ( sm:is-authenticated() ) then
+        true()
+    else
+        let $reason :="Operation restricted to authenticated users" 
+        return 
+            error(
+                xs:QName("app:rest-error"), $reason,
+                <rest:response><http:response status="401" reason="{$reason}"><http:header name="Www-Authenticate" value='Basic realm="jmmc account"'/></http:response></rest:response> 
+                )
+};
+
+declare function app:is-admin($catalog-name as xs:string) {
+    (: ok if catalog-name starts with one group of the authenticated user :)
+(:    starts-with( $catalog-name, sm:id()//*:group):)
+    (: SHOULD we restrict to external authentication or is authenticated is fine ? :)
+    if ( false() or sm:id()//*:username=("guillaume.mella@obs.ujf-grenoble.fr")) then
+        true()
+    else
+        let $reason := "Operation restricted to admin roles"
+        return 
+            error(xs:QName("app:rest-error"), $reason,
+            <rest:response><http:response status="401" reason="{$reason}"><http:header name="Www-Authenticate" value='Basic realm="jmmc account"'/></http:response></rest:response> )
+};
+
 
 (:~
  : Get a VOTABLE from given params querying TAP.
@@ -60,7 +208,24 @@ declare %private function app:tap-query($params) {
     let $query := adql:build-query($params)
     let $log := util:log("info", "TAP query : " || $query)
     return
-        tap:execute($query)
+        oidb-tap:execute($query)
+};
+
+declare function app:rest-error($code, $error-msg,$http-headers, $data){
+    ()
+    (:    TODO:)
+};
+
+declare function app:rest-response($code, $error-msg, $http-headers, $data){
+    (
+        <rest:response>
+            <http:response status="{$code}">
+            { if ($error-msg) then <http:header name="X-HTTP-Error-Description" value="{$error-msg}"/> else () }
+            { $http-headers }
+            </http:response>
+        </rest:response>  
+        ,$data (: TODO return an error if no data are given but an error-msg ? :)
+    )
 };
 
 (:~
@@ -115,7 +280,7 @@ declare %private function app:sql-query($params) {
             else if($result/name() = 'sql:result') then 
                 error(xs:QName("app:sql-not-found"), "no record found", <error><msg>no record found</msg></error>)
             else
-                error(xs:QName("app:sql-error"), $result/sql:message, $result)
+                error(xs:QName("app:sql-error"), $result/sql:message, $result) (: we may remove the long stacktrace ?? :)
         
         return
     (:        [  we may add metadata next to data:)
@@ -124,36 +289,15 @@ declare %private function app:sql-query($params) {
                     map:merge (
                         for $field in $row/sql:field return map:entry( $field/@name, app:cast-sql-field($field) )
                     )
-    
     } catch app:sql-not-found {
-        (
-            <rest:response>
-                <http:response status="404">
-                    <http:header name="X-HTTP-Error-Description" value="{$err:description}"/>
-                </http:response>
-            </rest:response>,
-            $err:value 
-        )
+        app:rest-response(404,$err:description, (), $err:value)
     } catch app:sql-error {
-        (
-            <rest:response>
-                <http:response status="400">
-                    <http:header name="X-HTTP-Error-Description" value="{$err:description}"/>
-                </http:response>
-            </rest:response>,
-            $err:value (: we may remove the long stacktrace ?? :)
-        )
+        app:rest-response(400,$err:description, (), $err:value)
     } catch * {
-            let $msg := string-join( ($err:code, $err:description, $err:value, " module: ", $err:module, "(", $err:line-number, ",", $err:column-number, ")" ), ", ")
-            let $log := util:log("error",$msg)
-            return 
-                <rest:response>
-                    <http:response status="400">
-                        <http:header name="X-HTTP-Error-Description" value="{$msg}"/>
-                    </http:response>
-                </rest:response>
+        app:rest-response(400, string-join(($err:code, $err:description, $err:value, " module: ", $err:module, "(", $err:line-number, ",", $err:column-number, ")" ), ", "), (), ())
     }
 };
+
 
 (:~
  : Return pis.
@@ -168,13 +312,14 @@ declare
     %output:method("json")
     %rest:path("/catalogs/accounts/{$catalog-name}")
 function app:get-catalog-pis($catalog-name as xs:string) {
-    (: reject anonymous calls :)
-    if (sm:is-authenticated()) then 
     try {
+        (: throw error if not authenticated anonymous calls :)
+        let $check-auth := app:is-authenticated()
+        
         (: TODO generalise : hardcoded for spica and oidb : prefer to look at catalog metadata :)    
         let $picol := if (starts-with($catalog-name, "spica")) then "target_piname" else "datapi"
         
-        let $catpis := tap:execute(adql:build-query(('catalog='||$catalog-name,'col='||$picol,'distinct')))
+        let $catpis := oidb-tap:execute(adql:build-query(('catalog='||$catalog-name,'col='||$picol,'distinct')))
         
         let $datapis := doc("/db/apps/oidb-data/people/people.xml")//person[alias/@email]
         let $res :=
@@ -189,17 +334,11 @@ function app:get-catalog-pis($catalog-name as xs:string) {
         </res>
         return 
             $res    
+    } catch app:rest-error {
+        $err:value
     } catch * {
-        <rest:response><http:response status="400"/></rest:response>,
-        map {
-            "error": string-join( ($err:code, $err:description, $err:value, " module: ", $err:module, "(", $err:line-number, ",", $err:column-number, ")" ), ", ")
-        }
+        app:rest-response(400,string-join( ($err:code, $err:description, $err:value, " module: ", $err:module, "(", $err:line-number, ",", $err:column-number, ")" ), ", "), (), ())
     }
-    else
-        (
-            <rest:response><http:response status="401"><http:header name="Www-Authenticate" value='Basic realm="jmmc account"'/></http:response></rest:response>,
-            map { "error": "please send authentication" }
-        )
 };
 
  
@@ -215,14 +354,18 @@ declare
     %output:method("json")
     %rest:path("/catalogs")
 function app:get-catalogs() {
-    let $res := app:sql-query(("catalog=&quot;TAP_SCHEMA&quot;.tables", "col=table_name", "col=description"))
-    return
-        try {
-            (: reformat maps so client just have to get keys to get list of tables :)
-            map:merge ( for $r in $res return map { $r?table_name : $r?description} )
-        }catch *{
-            $res
-        }
+    try{    
+        let $res := app:sql-query(("catalog=&quot;TAP_SCHEMA&quot;.tables", "col=table_name", "col=description"))
+            return
+                try {
+                (: reformat maps so client just have to get keys to get list of tables :)
+                map:merge ( for $r in $res return map { $r?table_name : $r?description} )
+                }catch *{
+                    $res
+                }
+    } catch app:rest-error {
+        $err:value
+    }
 };
 
 (:~
@@ -241,16 +384,13 @@ declare
     %rest:path("/catalogs/{$catalog-name}")
 function app:get-catalog-by-name($catalog-name as xs:string) {
     try {
-        app:tap-query(("catalog=" || $catalog-name, "limit=10"))
-    } catch * {
-        let $msg := string-join( ($err:code, $err:description, $err:value, " module: ", $err:module, "(", $err:line-number, ",", $err:column-number, ")" ), ", ")
-        let $log := util:log("error",$msg)
+        let $chech-access := app:has-access($catalog-name, "r--")
         return 
-            <rest:response>
-                <http:response status="500">
-                    <http:header name="X-HTTP-Error-Description" value="{$msg}"/>
-                </http:response>
-            </rest:response>
+            app:tap-query(("catalog=" || $catalog-name, "limit=10"))
+    }catch app:rest-error {
+        $err:value
+    } catch * {
+        app:rest-response( 400, string-join( ($err:code, $err:description, $err:value, " module: ", $err:module, "(", $err:line-number, ",", $err:column-number, ")" ), ", "), (), ())
     }
 };
 
@@ -268,19 +408,9 @@ declare
     %output:method("json")
 function app:get-catalog-meta($catalog-name as xs:string) {
     try {
-        (: TODO move this part in a common cached part that extract all catalog metadata :)
-        let $vot := app:tap-query(("catalog=" || $catalog-name, "limit=1"))
-        return 
-            <meta>TODO</meta>
+        app:get-metadata($catalog-name)
     } catch * {
-        let $msg := string-join( ($err:code, $err:description, $err:value, " module: ", $err:module, "(", $err:line-number, ",", $err:column-number, ")" ), ", ")
-        let $log := util:log("error",$msg)
-        return 
-            <rest:response><http:response status="500">
-                    <http:header name="X-HTTP-Error-Description" value="{$msg}"/>
-                    <error>{$msg}</error>
-                </http:response>
-            </rest:response>
+        app:rest-response( 400, string-join( ($err:code, $err:description, $err:value, " module: ", $err:module, "(", $err:line-number, ",", $err:column-number, ")" ), ", "), (), ())
     }
 };
 
@@ -299,7 +429,13 @@ declare
     %output:media-type("application/json")
     %output:method("json")
 function app:get-catalog-row($catalog-name as xs:string, $id as xs:integer) {
-    app:sql-query(("catalog=" || $catalog-name, "id="||$id))
+    try{
+        let $check-access := app:has-row-access($catalog-name, $id, "r--")
+        return 
+            app:sql-query(("catalog=" || $catalog-name, "id="||$id))
+    } catch app:rest-error {
+        $err:value
+    }
 };
 
 (:~
@@ -319,20 +455,12 @@ function app:get-catalog-cell($catalog-name as xs:string, $id as xs:integer, $ke
     app:sql-query(("catalog=" || $catalog-name, "id="||$id, "col="||$key))
 };
 
-(:~
- : Return a catalog record given a catalog name and record ID.
- : 
- : @param $catalog-name the name of the catalog to find
- : @param $id the id of the catalog record to find
- : @return a json serialized record.
- :)
-declare
-    %rest:GET
-    %rest:path("/catalogs/{$catalog-name}/{$id}")
-    %output:media-type("application/json")
-    %output:method("json")
-function app:get-catalog-row($catalog-name as xs:string, $id as xs:integer) {
-        app:sql-query(("catalog=" || $catalog-name, "id="||$id))
+declare function app:map-filter($map as map(*), $removed-keys as xs:string*){
+    map:merge( map:for-each( $map, function ($k,$v) { map:entry($k, $v)[not($k=$removed-keys)] } ) )
+};
+
+declare function app:get-row-set-expr($params){
+    string-join( map:for-each($params, function($k, $v){ $k || "='" || sql-utils:escape($v) || "'" }) ,', ' )
 };
 
 declare function app:get-row-update-statement($catalog-name, $values) as xs:string* 
@@ -340,24 +468,39 @@ declare function app:get-row-update-statement($catalog-name, $values) as xs:stri
     let $array := if ($values instance of map()) then array { $values } else $values
 
     for $values in $array?*
-        let $id := $values?id 
+        let $id-col-name := app:get-catalog-primary-key($catalog-name) 
+        let $id := $values($id-col-name) 
         (:    let $has-id := if ( empty($id) ) then error("id key must be present for update") else ():)
         
         (: build set expr filtering ID value :)
-        let $set-expr := string-join( map:for-each($values, function($k, $v){ if ($k != 'id' ) then $k || "='" || sql-utils:escape($v) || "'" else () }) ,', ' )
+        let $set-expr := app:get-row-set-expr(app:map-filter($values, $id-col-name))
         let $check-set := if(string-length($set-expr)>0) then () else error(xs:QName("app:missing-col"), "no value to update")
         return
-        string-join( ( "UPDATE", $catalog-name, "SET", $set-expr, "WHERE id='" || $id || "'" ), ' ')
+            string-join( ( "UPDATE", $catalog-name, "SET", $set-expr, "WHERE", $id-col-name || "='" || $id || "'" ), ' ')
 };
+
+declare function app:get-row-insert-statement($catalog-nameas as xs:string, $array as array(*)) as xs:string* 
+{
+    for $values in $array?*
+        let $id-col-name := app:get-catalog-primary-key($catalog-name) 
+        let $keys := map:keys($values)
+        let $check-set := if(map:size($values)>0) then () else error(xs:QName("app:missing-col"), "no value to insert")
+        let $columns := "( " || string-join($keys, ', ') || " )"
+        let $vals := "( " || string-join( ( for $key in $keys return "'" || sql-utils:escape($values($key)) || "'"), ', ') || " )"
+     
+        return
+            string-join( ( "INSERT INTO", $catalog-name, $columns, "VALUES", $vals ,    "RETURNING "|| $id-col-name ), ' ')
+};
+
  
 
 (:~
  : Update a single catalog record for a given id with values provided by given json content.
  : eg: { "target_priority_pi": 2, "target_spica_mode": "ABCD" }
  : 
- : @param $catalog-entry record values to update
- : @param $catalog-doc the new data for the catalog
+ : @param $catalog-name the catalog name to update
  : @param $id the id of the catalog record to update
+ : @param $catalog-entry record values to update
  : @return ignore, see HTTP status code
  :)
 declare
@@ -366,62 +509,15 @@ declare
     %rest:consumes("application/json")
     %rest:produces("application/json")
     %output:method("json")
-function app:put-catalog($catalog-name as xs:string, $id as xs:string, $catalog-entry) {
+function app:update-row($catalog-name as xs:string, $id as xs:string, $catalog-entry) {
+    let $primary-key := app:get-catalog-primary-key($catalog-name)
+    let $json := parse-json(util:base64-decode($catalog-entry))
+    let $json := if ($json instance of xs:string) then parse-json($json) else $json (: We can get the json or its string serialization :)
     
-    (:  TODO check for permissions : general access then per row :)
-    let $log := util:log('info', "user is : " || serialize( sm:id() ) ) 
-    
-    let $resp := (: must contains (status-code, optionnal-error-message) :) 
-        try {
-            if (not(sm:is-authenticated())) then (401, "Please login") 
-            else
-                
-            let $connection-handle := sql:get-jndi-connection(sql-utils:get-jndi-name())
-           
-            let $json := parse-json(util:base64-decode($catalog-entry))
-(:            let $meta := map { "lastModDate":current-dateTime() , "lastModAuthor": sm:id()//sm:username  }:)
-(:            let $values := map:merge(($json, $meta)):)
- 
-            let $values := map:merge(( $json , map {"id":$id} ))
-            let $sql-statement := app:get-row-update-statement($catalog-name, $values)
-
-            let $log := util:log("info", "updating " || $catalog-name || "/" || $id || ":" || $sql-statement)
-    
-            let $result := if( true() ) then (: at present time execution must be performed here to avoir pool starvation :)
-                    sql:execute($connection-handle, $sql-statement, false())
-                else
-                    let $log := util:log("info", "using given handle for sql-utils :" || $connection-handle )
-                    return
-                        sql-utils:execute($connection-handle, $sql-statement, false())
-
-            return
-                if ($result/name() = 'sql:result' and $result/@updateCount = 1) then
-                    (: row updated successfully :)
-                    (204 (: No Content :) ,())
-                else if ($result/name() = 'sql:exception') then
-                    (400 (: Not Found :) , 'Failed to update record ' || $id || ' : ' || data($result//sql:message))
-                else
-                    (404 (: Bad Request :) , 'Failed to update record ' || $id || '.' || $connection-handle )
-                    
-        } catch * {
-            let $msg := string-join( ($err:code, $err:description, $err:value, " module: ", $err:module, "(", $err:line-number, ",", $err:column-number, ")" ), ", ") 
-            return 
-                ( 400 (: Internal Server Error :) , $msg, util:log("error", $msg) )
-        }
-        
-    return 
-        (
-        <rest:response>
-            <http:response status="{ $resp[1] }">
-                {
-                    if ( empty($resp[2]) ) then ()
-                    else
-                        <http:header name="X-HTTP-Error-Description" value="{$resp[2]}"/>
-                }
-            </http:response>
-        </rest:response>
-        , map { "error" : $resp[2], "log": "request performed by "||serialize( sm:id() )  }
-        )
+    (: TODO check if primary-key is present in payload :)
+    return
+        (: normalize argument as a multirow update :)
+        app:update-catalog($catalog-name, array { map:merge((map {$primary-key:$id} , $json)) }) 
 };
 
 
@@ -442,81 +538,150 @@ declare
     %rest:consumes("application/json")
      %rest:produces("application/json")
     %output:method("json")
-function app:put-catalog($catalog-name as xs:string, $catalog-entries) {
+function app:update-rows($catalog-name as xs:string, $catalog-entries) {
+    let $json := parse-json(util:base64-decode($catalog-entries))
+    let $json := if ($json instance of xs:string) then parse-json($json) else $json (: We can get the json or its string serialization :)
+    return
+        app:update-catalog($catalog-name, $json)
+};
+
+
+(:~
+ : Update multiple catalog records looking at given ids and their values provided by given json content.
+ : payload is considered valid if :
+ :  - all elements of the array have a single id
+ :  - all ids are distincts
+ : we expect to receive non duplicated keys in the same json element else only one will be considered
+ : 
+ : @param $catalog-entry record values to update
+ : @param $json the new data for the catalog
+ : @return ignore, see HTTP status code
+ :)
+declare function app:update-catalog($catalog-name as xs:string, $values as array(*) ) {
     
-    (:  TODO check for permissions : general access then per row :)
+    try {
+        let $check-access := app:has-access($catalog-name, "r--") (: TODO replace by has rows access :)
+        
+        (: TODO start transaction :)
+        
+        let $sql-statements := app:get-row-update-statement($catalog-name, $values)
+        
+        let $connection-handle := sql:get-jndi-connection(sql-utils:get-jndi-name())
+        let $results:= 
+            for $s in $sql-statements
+                let $log := util:log("info", "SQL: " || $s)
+                let $result := sql:execute($connection-handle, $s, false())
+                return
+                    $result (: TODO : throw an error if no record updated :)
+            
+        (: TODO analyse whole results so we can commit :)
+        (: hack : returning first faulty one :)
+        let $result := ($results[name() = 'sql:exception'] | $results[not(name() = 'sql:exception')])[1]
+        let $result := $results[position()  = last()]
+        
+        return
+            if ($result/name() = 'sql:result' and $result/@updateCount = 1) then
+                (: row updated successfully :)
+                app:rest-response(204 (: No Content :) ,(),(),())
+                (: TODO COMMIT :)
+            else if ($result/name() = 'sql:exception') then
+                app:rest-response(400 (: Not Found :) , 'Failed to update records : ' || data($result//sql:message), (), ())
+                (: TODO ROLLBACK :)
+            else
+                app:rest-response(404 (: Bad Request :) , 'Failed to update records.', (), () )
+                (: TODO ROOLBACK :)
+    } catch app:rest-error {
+        (: TODO ROLLBACK :)
+        $err:value
+    } catch sql:exception {
+        app:rest-response(400 (: Not Found :), 'Failed to update records : ' || string-join( ($err:code, $err:description, $err:value, " module: ", $err:module, "(", $err:line-number, ",", $err:column-number, ")" ) ), (), () ) 
+    }catch * {
+        (: TODO ROLLBACK :)
+        app:rest-response(500, string-join( ($err:code, $err:description, $err:value, " module: ", $err:module, "(", $err:line-number, ",", $err:column-number, ")" ), ", "), (), ())
+    }
+
+};
+
+
+
+(:~
+ : Add records looking at given json content.
+ : payload is considered valid if :
+ :  - all elements of the array have a required columns
+ : 
+ : @param $catalog-entry record values to update
+ : @param $catalog-doc the new data for the catalog
+ : @return ids of new records or error, see HTTP status code
+ :)
+declare
+    %rest:POST("{$catalog-entries}")
+    %rest:path("/catalogs/{$catalog-name}")
+    %rest:consumes("application/json")
+     %rest:produces("application/json")
+    %output:method("json")
+function app:post-catalog($catalog-name as xs:string, $catalog-entries) {
+    
+    (:  TODO check for permissions, ie. : admin access  :)
     let $log := util:log('info', "user is : " || serialize( sm:id() ) ) 
     
     let $resp := (: must contains (status-code, optionnal-error-message) :) 
         try {
-            if (not(sm:is-authenticated())) then (401, "Please login") 
+            if (not(app:is-admin($catalog-name))) then (401, "Please login as admin") 
             else
             
-            let $json := parse-json(util:base64-decode($catalog-entries))
+            let $json-txt := util:base64-decode($catalog-entries)
+            let $log := util:log('info', "JSON for post : "|| $json-txt)
+            let $json := parse-json($json-txt)
             let $values := $json
             
             (: TODO start transaction :)
             
-            let $sql-statements := app:get-row-update-statement($catalog-name, $values)
+            let $sql-statements := app:get-row-insert-statement($catalog-name, $values)
             
             let $connection-handle := sql:get-jndi-connection(sql-utils:get-jndi-name())
+            
             let $results:= 
                 for $s in $sql-statements
-                    let $log := util:log("info", "updating " || $catalog-name || ":" || $s)
+                    let $log := util:log("info", "SQL: " || $catalog-name || ":" || $s)
                     let $result := sql:execute($connection-handle, $s, false())
                     return
                         $result (: TODO : throw an error if no record updated :)
+(:                         and $result/@updateCount = 1) then:)
                 
-            (: TODO analyse whole results so we can commit :)
-            (: hack : returning first faulty one :)
-            let $result := ($results[name() = 'sql:exception'] | $results[not(name() = 'sql:exception')])[1]
-            let $result := $results[position()  = last()]
-            
+            let $result := $results
+             
             return
-                if ($result/name() = 'sql:result' and $result/@updateCount = 1) then
-                    (: row updated successfully :)
-                    (204 (: No Content :) ,())
+                if ($result) then (: TODO check for errors :)
+                    (: rows inserted successfully :)
+                    (200   ,$result)
                     (: TODO COMMIT :)
                 else if ($result/name() = 'sql:exception') then
-                    (400 (: Not Found :) , 'Failed to update records : ' || data($result//sql:message))
+                    (400 (: Not Found :) , 'Failed to insert records : ' || data($result//sql:message))
                     (: TODO ROLLBACK :)
                 else
-                    (404 (: Bad Request :) , 'Failed to update records.' )
+                    (404 (: Bad Request :) , 'Failed to insert records.' )
                     (: TODO ROOLBACK :)
         } catch sql:exception {
-            (400 (: Not Found :), 'Failed to update records : ' || string-join( ($err:code, $err:description, $err:value, " module: ", $err:module, "(", $err:line-number, ",", $err:column-number, ")" ) ) , util:log("error", "sql:exception "))
-        }catch * {
-            
             (: TODO ROLLBACK :)
-            
+            (400 (: Not Found :), string-join( ($err:code, $err:description, $err:value, " module: ", $err:module, "(", $err:line-number, ",", $err:column-number, ")" ) ) , util:log("error", "sql:exception "))
+        }catch * {
+            (: TODO ROLLBACK :)
             let $msg := "can't update : "|| string-join( ($err:code, $err:description, $err:value, " module: ", $err:module, "(", $err:line-number, ",", $err:column-number, ")" ), ", ") 
             return 
                 ( 500 (: Internal Server Error :) , $msg, util:log("error", $msg) )
-                
         }
         
     return 
-        <rest:response>
-            <http:response status="{ $resp[1] }">
-                {
-                    if ( empty($resp[2]) ) then ()
-                    else
-                    <http:header name="X-HTTP-Error-Description" value="{$resp[2]}"/>
-                }
-            </http:response>
-        </rest:response>
+        app:rest-response($resp[1], $resp[2], (), ())
 };
 
 
 (: -------------------------------
- : UNFINISHED BELOW but could be reused
+ : UNFINISHED BELOW ....
+ : -------------------------------
  :)
-
-(:~
- : Push one or more catalogs records into the database.
- : TODO ??
- :)
-
+ 
+ 
 (:~
  : TODO? Delete the catalog with the given ID from the database.
  : @param $id the id of the catalog to delete
@@ -538,6 +703,5 @@ function app:delete-catalog($id as xs:string) {
         } catch * {
             500 (: Internal Server Error :)
         }
-    return <rest:response><http:response status="{ $status }"/></rest:response>
+    return app:rest-response($status, (), (), ())
 };
-
