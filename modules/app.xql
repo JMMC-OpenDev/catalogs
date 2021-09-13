@@ -102,16 +102,23 @@ declare function app:show-catalog($node as node(), $model as map(*), $name as xs
 (:    return <pre>TODO</pre>:)
 };
 
-declare function app:get-metadata($name){
+declare function app:get-metadata($catalog-name){
+    let $primary-key := app:get-catalog-primary-key($catalog-name)
     (: ask for 0 data but metadata ( query result is cached ) :)
-    let $res := jmmc-tap:tap-adql-query($oidb-config:TAP_SYNC,"SELECT TOP 0 * FROM "||$name, (), "application/json")
-    return $res?metadata
+    let $res := jmmc-tap:tap-adql-query($oidb-config:TAP_SYNC,"SELECT TOP 0 * FROM "||$catalog-name, (), "application/json")
+    let $json := for $m in $res?metadata?*
+        return if ( $m?name = $primary-key) then map:merge(($m,map {"primary-key":true()}))
+            else $m
+    return $json
 };
 
 declare function app:get-catalog-primary-key($catalog-name){
     if(starts-with($catalog-name, "spica_"))
     then 
         "spicadb_id"
+    else if(starts-with($catalog-name, "obsportal"))
+    then 
+        "exp_id"
     else 
         "id"
 };
@@ -121,7 +128,7 @@ declare function app:is-public($catalog-name as xs:string)
     (: TODO finish implementation:  handle groups and read config from catalog metadata ... :)
     
     (: mockup :)
-    let $public-cats := ("oidb")
+    let $public-cats := ("oidb", "obsportal")
     return starts-with($catalog-name, $public-cats)
 };    
             
@@ -186,9 +193,7 @@ declare function app:is-authenticated() {
 
 declare function app:is-admin($catalog-name as xs:string) {
     (: ok if catalog-name starts with one group of the authenticated user :)
-(:    starts-with( $catalog-name, sm:id()//*:group):)
-    (: SHOULD we restrict to external authentication or is authenticated is fine ? :)
-    if ( false() or sm:id()//*:username=("guillaume.mella@obs.ujf-grenoble.fr")) then
+    if ( false() or sm:id()//*:username=("guillaume.mella@obs.ujf-grenoble.fr") or starts-with( $catalog-name, sm:id()//*:group) ) then
         true()
     else
         let $reason := "Operation restricted to admin roles"
@@ -431,8 +436,9 @@ declare
 function app:get-catalog-row($catalog-name as xs:string, $id as xs:integer) {
     try{
         let $check-access := app:has-row-access($catalog-name, $id, "r--")
+        let $primary-key := app:get-catalog-primary-key($catalog-name) 
         return 
-            app:sql-query(("catalog=" || $catalog-name, "id="||$id))
+            app:sql-query(("catalog=" || $catalog-name, "id="||$primary-key||":"||$id)) 
     } catch app:rest-error {
         $err:value
     }
@@ -452,7 +458,9 @@ declare
     %output:media-type("application/json")
     %output:method("json")
 function app:get-catalog-cell($catalog-name as xs:string, $id as xs:integer, $key as xs:string) {
-    app:sql-query(("catalog=" || $catalog-name, "id="||$id, "col="||$key))
+    let $id-col-name := app:get-catalog-primary-key($catalog-name) 
+    return
+        app:sql-query(("catalog=" || $catalog-name, "id="||$id-col-name||":"||$id, "col="||$key))
 };
 
 declare function app:map-filter($map as map(*), $removed-keys as xs:string*){
@@ -479,7 +487,7 @@ declare function app:get-row-update-statement($catalog-name, $values) as xs:stri
             string-join( ( "UPDATE", $catalog-name, "SET", $set-expr, "WHERE", $id-col-name || "='" || $id || "'" ), ' ')
 };
 
-declare function app:get-row-insert-statement($catalog-nameas as xs:string, $array as array(*)) as xs:string* 
+declare function app:get-row-insert-statement($catalog-name as xs:string, $array as array(*)) as xs:string* 
 {
     for $values in $array?*
         let $id-col-name := app:get-catalog-primary-key($catalog-name) 
@@ -620,59 +628,60 @@ declare
      %rest:produces("application/json")
     %output:method("json")
 function app:post-catalog($catalog-name as xs:string, $catalog-entries) {
-    
-    (:  TODO check for permissions, ie. : admin access  :)
-    let $log := util:log('info', "user is : " || serialize( sm:id() ) ) 
-    
-    let $resp := (: must contains (status-code, optionnal-error-message) :) 
-        try {
-            if (not(app:is-admin($catalog-name))) then (401, "Please login as admin") 
-            else
-            
-            let $json-txt := util:base64-decode($catalog-entries)
-            let $log := util:log('info', "JSON for post : "|| $json-txt)
-            let $json := parse-json($json-txt)
-            let $values := $json
-            
-            (: TODO start transaction :)
-            
-            let $sql-statements := app:get-row-insert-statement($catalog-name, $values)
-            
-            let $connection-handle := sql:get-jndi-connection(sql-utils:get-jndi-name())
-            
-            let $results:= 
-                for $s in $sql-statements
-                    let $log := util:log("info", "SQL: " || $catalog-name || ":" || $s)
-                    let $result := sql:execute($connection-handle, $s, false())
-                    return
-                        $result (: TODO : throw an error if no record updated :)
-(:                         and $result/@updateCount = 1) then:)
-                
-            let $result := $results
-             
-            return
-                if ($result) then (: TODO check for errors :)
-                    (: rows inserted successfully :)
-                    (200   ,$result)
-                    (: TODO COMMIT :)
-                else if ($result/name() = 'sql:exception') then
-                    (400 (: Not Found :) , 'Failed to insert records : ' || data($result//sql:message))
-                    (: TODO ROLLBACK :)
-                else
-                    (404 (: Bad Request :) , 'Failed to insert records.' )
-                    (: TODO ROOLBACK :)
-        } catch sql:exception {
-            (: TODO ROLLBACK :)
-            (400 (: Not Found :), string-join( ($err:code, $err:description, $err:value, " module: ", $err:module, "(", $err:line-number, ",", $err:column-number, ")" ) ) , util:log("error", "sql:exception "))
-        }catch * {
-            (: TODO ROLLBACK :)
-            let $msg := "can't update : "|| string-join( ($err:code, $err:description, $err:value, " module: ", $err:module, "(", $err:line-number, ",", $err:column-number, ")" ), ", ") 
-            return 
-                ( 500 (: Internal Server Error :) , $msg, util:log("error", $msg) )
-        }
-        
+    let $connection-handle := sql:get-jndi-connection(sql-utils:get-jndi-name())
     return 
-        app:rest-response($resp[1], $resp[2], (), ())
+    try {
+        if (not(app:is-admin($catalog-name))) then app:rest-response(401, "Please login as admin", (), ())
+        else
+        
+        let $json-txt := util:base64-decode($catalog-entries)
+        let $log := util:log('info', "JSON for post : "|| $json-txt)
+        let $json := parse-json($json-txt)
+        let $values := $json
+        
+        (: TODO start transaction :)
+        let $log := util:log("info", "START TRANSACTION")
+        let $begin := sql:execute($connection-handle, "START TRANSACTION", false())
+        
+        let $sql-statements := app:get-row-insert-statement($catalog-name, $values)
+        
+        let $results:= 
+            for $s in $sql-statements
+                let $log := util:log("info", "SQL: " || $catalog-name || ":" || $s)
+                let $result := sql:execute($connection-handle, $s, false())
+                return
+                    $result (: TODO : throw an error if no record updated :)
+(:                         and $result/@updateCount = 1) then:)
+
+        let $end   := sql:execute($connection-handle, "COMMIT", false())
+        let $log := util:log("info", "COMMIT TRANSACTION")
+
+        let $result := map{ app:get-catalog-primary-key($catalog-name) : data($results) }
+         
+        return
+            if (exists($result)) then (: TODO check for errors :)
+                (: rows inserted successfully :)
+                app:rest-response(200, () ,(), $result)
+                (: TODO COMMIT :)
+            else if ($result/name() = 'sql:exception') then
+                app:rest-response(400 (: Not Found :) , 'Failed to insert records : ' || data($result//sql:message), (), ())
+                (: TODO ROLLBACK :)
+            else
+                app:rest-response(404 (: Bad Request :) , 'Failed to insert records.', (), () )
+                (: TODO ROOLBACK :)
+    } catch sql:exception {
+        let $log := util:log("info", "ROLLBACK TRANSACTION")
+        let $end :=sql:execute($connection-handle, "ROLLBACK", false())
+        let $msg := string-join( ($err:code, $err:description, $err:value, " module: ", $err:module, "(", $err:line-number, ",", $err:column-number, ")" ) )
+        return 
+            app:rest-response(400 (: Not Found :), $msg,  (), ())
+    }catch * {
+        let $log := util:log("info", "ROLLBACK TRANSACTION")
+        let $end :=sql:execute($connection-handle, "ROLLBACK", false())
+        let $msg := string-join( ($err:code, $err:description, $err:value, " module: ", $err:module, "(", $err:line-number, ",", $err:column-number, ")" ), ", ") 
+        return 
+            app:rest-response(400, $msg, (), ())
+    }
 };
 
 
