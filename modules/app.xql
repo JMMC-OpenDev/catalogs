@@ -76,7 +76,7 @@ declare function app:show-catalog($node as node(), $model as map(*), $name as xs
     let $metadata := app:get-metadata($name)
 (:    :)
     let $keys := distinct-values( ("name", "description"))
-    let $keys := distinct-values( ("name", "description",  array:for-each($metadata , function ($m) { map:keys($m) } )))
+    let $keys := distinct-values( ("name", "description", for $m in $metadata return map:keys($m)))
     return 
     <div>
         <h1>{$name} catalog </h1>
@@ -88,10 +88,10 @@ declare function app:show-catalog($node as node(), $model as map(*), $name as xs
             <thead><tr>{for $key in $keys return <th>{$key}</th>}</tr></thead>
             <tbody>
             {
-                for $meta in $metadata?*
+                for $meta in $metadata
                 return
                     <tr>{
-                        let $elname := if( $primary-key=$meta?name) then "b" else "span"
+                        let $elname := if( $primary-key=$meta("name") ) then "b" else "span"
                         for $key in $keys return <td>{element {$elname} {$meta($key)}}</td>}</tr>
             }
             </tbody>
@@ -154,10 +154,24 @@ declare function app:has-access($catalog-name as xs:string, $mode as xs:string)
                     let $reason := "Catalog is not public"
                     return error(
                             xs:QName("app:rest-error"), $reason,
-                            app:rest-response(401,$reason,<http:header name="Www-Authenticate" value='Basic realm="jmmc account"'/>,()) 
+                            app:rest-response(401,$reason)
                             )
 };
 
+declare function app:get-catalog-pi-name($catalog-name as xs:string){
+    (: TODO retrieve using ucd data pi:)
+    "piname"
+};
+
+declare function app:get-pi-aliases($login) {
+    let $datapis := data(doc("/db/apps/oidb-data/people/people.xml")//person[.//@email=$login]/alias)
+    let $log := util:log("info" ,"aliases found for login=" || $login || " : " ||string-join($datapis, ", "))
+    return $datapis
+};
+
+declare function app:is-pi-valid($login, $piname){
+  $piname ! upper-case(.) = app:get-pi-aliases($login)! upper-case(.)
+};
 
 declare function app:has-row-access($catalog-name as xs:string, $id as xs:integer, $mode as xs:string)
 {
@@ -168,14 +182,22 @@ declare function app:has-row-access($catalog-name as xs:string, $id as xs:intege
         return 
             if ($is-admin) then 
                 true()
-            else if (false()) then (: TODO get pi of this row and crosscheck with associated accounts :)
-                true()
             else 
-                let $reason := "Operation restricted to record's owner, delegated users or admins" (: Can we show here the PI value :)
-                return error(
-                        xs:QName("app:rest-error"), $reason,
-                        <rest:response><http:response status="401" reason="{$reason}"></http:response></rest:response> 
-                        )
+                let $pi-colname := app:get-catalog-pi-name($catalog-name)
+                let $primary-key := app:get-catalog-primary-key($catalog-name)
+                let $piname :=  app:sql-query(("catalog="||$catalog-name, "col="||$pi-colname, "id="||$primary-key||":"||$id))
+                let $piname := try { $piname?* } catch * { () }
+                let $log := util:log("info" ,"piname for record id="||$id|| " is "|| $piname)
+
+                return 
+                    if (app:is-pi-valid(sm:id()//*:username, $piname)) then
+                        true()
+                    else 
+                        let $reason := "Operation restricted to record's owner(" || $piname || "), delegated users or admins" (: Can we show here the PI value :)
+                        return error(
+                                xs:QName("app:rest-error"), $reason,
+                                app:rest-response(401,$reason)
+                            )
 };
 
 declare function app:is-authenticated() {
@@ -186,20 +208,26 @@ declare function app:is-authenticated() {
         let $reason :="Operation restricted to authenticated users" 
         return 
             error(
-                xs:QName("app:rest-error"), $reason,
-                <rest:response><http:response status="401" reason="{$reason}"><http:header name="Www-Authenticate" value='Basic realm="jmmc account"'/></http:response></rest:response> 
+                    xs:QName("app:rest-error"), $reason,
+                    app:rest-response(401,$reason)
                 )
 };
 
 declare function app:is-admin($catalog-name as xs:string) {
     (: ok if catalog-name starts with one group of the authenticated user :)
     if ( false() or sm:id()//*:username=("guillaume.mella@obs.ujf-grenoble.fr") or starts-with( $catalog-name, sm:id()//*:group) ) then
-        true()
+        (
+            util:log("info", "user "||sm:id()//sm:username||" is admin for " || $catalog-name ),
+            true()
+        )
     else
+        let $log := util:log("info", "user "||sm:id()//sm:username||" is not admin for " || $catalog-name )
         let $reason := "Operation restricted to admin roles"
         return 
-            error(xs:QName("app:rest-error"), $reason,
-            <rest:response><http:response status="401" reason="{$reason}"><http:header name="Www-Authenticate" value='Basic realm="jmmc account"'/></http:response></rest:response> )
+            error(
+                xs:QName("app:rest-error"), $reason,
+                app:rest-response(401,$reason)
+            )
 };
 
 
@@ -216,9 +244,8 @@ declare %private function app:tap-query($params) {
         oidb-tap:execute($query)
 };
 
-declare function app:rest-error($code, $error-msg,$http-headers, $data){
-    ()
-    (:    TODO:)
+declare function app:rest-response($code, $error-msg){
+    app:rest-response($code, $error-msg, (), ())
 };
 
 declare function app:rest-response($code, $error-msg, $http-headers, $data){
@@ -227,6 +254,7 @@ declare function app:rest-response($code, $error-msg, $http-headers, $data){
             <http:response status="{$code}">
             { if ($error-msg) then <http:header name="X-HTTP-Error-Description" value="{$error-msg}"/> else () }
             { $http-headers }
+            {if($code=401) then <http:header name="Www-Authenticate" value='Basic realm="jmmc account"'/> else ()}
             </http:response>
         </rest:response>  
         ,$data (: TODO return an error if no data are given but an error-msg ? :)
