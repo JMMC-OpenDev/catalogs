@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<div xmlns="http://www.w3.org/1999/xhtml" data-template="templates:surround" data-template-with="templates/page.html" data-template-at="content">
+<div class="row">
+    <div class="col-md-6">
+            <h2 id="changelog">ChangeLog</h2>
+                <!-- jmmc-about:changelog is called by page.html template -->
+                Current version: <span data-template="jmmc-about:version"/> (<span data-template="jmmc-about:status"/>)
+                <br/>
+                Deployed on: <span data-template="jmmc-about:deployed"/>
+            <div data-template="templates:each" data-template-from="changes" data-template-to="change">
+                <div>
+                    <hr/>
+                    <div>
+                        <b>Version <span data-template="jmmc-about:change-version"/>
+                        </b>
+                    </div>
+                    <div data-template="jmmc-about:change"/>
+                </div>
+            </div>
+        </div>
+        <div class="col-md-6">
+        <h2>
+        <a name="credits"/>Credits</h2>
+    <p>
+        Many thanks to :
+        <ul>
+            <li>
+                <a href="http://www.ivoa.net">IVOA</a> community and products
+            </li>
+            <li>Colleagues from <a href="http://www.france-vo.org">
+                    <img alt="france-ov logo" src="resources/images/france-vo.jpg" width="106" heigth="59"/>
+                </a>
+            </li>
+            <li>eXist-db, GNU/Linux, many other wonderful tools.</li>
+        </ul>
+    </p>
+    </div>
+    </div>
+</div>
