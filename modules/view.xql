@@ -14,6 +14,8 @@ import module namespace lib="http://exist-db.org/xquery/html-templating/lib";
  :)
 import module namespace config="http://exist.jmmc.fr/catalogs/config" at "config.xqm";
 import module namespace app="http://exist.jmmc.fr/catalogs/templates" at "app.xql";
+import module namespace jmmc-about="http://exist.jmmc.fr/jmmc-resources/about" ;
+
 
 declare namespace output = "http://www.w3.org/2010/xslt-xquery-serialization";
 
