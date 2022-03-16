@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>fr.jmmc</groupId>
+        <artifactId>exist</artifactId>
+        <version>TRUNK</version>
+    </parent>
+
+    <groupId>fr.jmmc.exist</groupId>
+    <artifactId>catalogs</artifactId>
+
+    <packaging>pom</packaging>
+    <name>JMMC Catalog API application</name>
+
+    <properties>
+        <!-- do copy dependencies -->
+        <mdep.skip>false</mdep.skip>
+    </properties>
+
+    <build>
+        <plugins>
+            <plugin>
+                <artifactId>maven-antrun-plugin</artifactId>
+                <version>1.7</version>
+                <executions>
+                    <execution>
+                        <phase>install</phase>
+                        <configuration>
+                            <propertyPrefix>mvn</propertyPrefix>
+                            <target>
+                                <ant antfile="${basedir}/build.xml" target="xar"/>
+                            </target>
+                        </configuration>
+                        <goals>
+                            <goal>run</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+        </plugins>
+    </build>
+
+</project>
+
