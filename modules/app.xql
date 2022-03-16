@@ -2,7 +2,8 @@ xquery version "3.1";
 
 module namespace app="http://exist.jmmc.fr/catalogs/templates";
 
-import module namespace templates="http://exist-db.org/xquery/templates" ;
+import module namespace templates="http://exist-db.org/xquery/html-templating";
+import module namespace lib="http://exist-db.org/xquery/html-templating/lib";
 import module namespace config="http://exist.jmmc.fr/catalogs/config" at "config.xqm";
 
 import module namespace oidb-config="http://apps.jmmc.fr/exist/apps/oidb/config" at "../../oidb/modules/config.xqm";
@@ -350,7 +351,7 @@ function app:get-catalog-pis($catalog-name as xs:string) {
         let $check-auth := app:is-authenticated()
         
         (: TODO generalise : hardcoded for spica and oidb : prefer to look at catalog metadata :)    
-        let $picol := if (starts-with($catalog-name, "spica")) then "target_piname" else "datapi"
+        let $picol := if (starts-with($catalog-name, "spica")) then "piname" else "datapi"
         
         let $catpis := oidb-tap:execute(adql:build-query(('catalog='||$catalog-name,'col='||$picol,'distinct')))
         
