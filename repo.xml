@@ -14,6 +14,12 @@
 
     <note/>
     <changelog>
+         <change xmlns="" version="0.7">
+           <h3>20 march 2022</h3>
+            <ul>
+                <li>SQL extension hardening.</li>
+            </ul>
+        </change>
          <change xmlns="" version="0.6">
             <h3>Better release notes are coming</h3>
             <ul>
