@@ -307,8 +307,7 @@ declare function app:cast-sql-field($field){
 declare %private function app:sql-query($params) {
     try {
         let $query := adql:build-query($params)
-        let $log := util:log("info", "SQL query : " || $query)
-        let $result := sql:execute(sql:get-jndi-connection(sql-utils:get-jndi-name()), $query, false())
+        let $result := sql-utils:execute($query, false())
         
         let $check-result := if ( $result/sql:row and $result/@count > 0) then () (: OK :)
             else if($result/name() = 'sql:result') then 
@@ -595,7 +594,6 @@ function app:update-rows($catalog-name as xs:string, $catalog-entries) {
  : @return ignore, see HTTP status code
  :)
 declare function app:update-catalog($catalog-name as xs:string, $values as array(*) ) {
-    
     try {
         let $check-access := app:has-access($catalog-name, "r--") (: TODO replace by has rows access :)
         
@@ -603,11 +601,10 @@ declare function app:update-catalog($catalog-name as xs:string, $values as array
         
         let $sql-statements := app:get-row-update-statement($catalog-name, $values)
         
-        let $connection-handle := sql:get-jndi-connection(sql-utils:get-jndi-name())
         let $results:= 
             for $s in $sql-statements
                 let $log := util:log("info", "SQL: " || $s)
-                let $result := sql:execute($connection-handle, $s, false())
+                let $result := sql-utils:execute($s, false())
                 return
                     $result (: TODO : throw an error if no record updated :)
             
@@ -657,7 +654,7 @@ declare
      %rest:produces("application/json")
     %output:method("json")
 function app:post-catalog($catalog-name as xs:string, $catalog-entries) {
-    let $connection-handle := sql:get-jndi-connection(sql-utils:get-jndi-name())
+    let $handle := sql:get-jndi-connection(sql-utils:get-jndi-name())
     return 
     try {
         if (not(app:is-admin($catalog-name))) then app:rest-response(401, "Please login as admin", (), ())
@@ -670,20 +667,21 @@ function app:post-catalog($catalog-name as xs:string, $catalog-entries) {
         
         (: TODO start transaction :)
         let $log := util:log("info", "START TRANSACTION")
-        let $begin := sql:execute($connection-handle, "START TRANSACTION", false())
+        let $begin := sql-utils:execute($handle, "START TRANSACTION", false())
         
         let $sql-statements := app:get-row-insert-statement($catalog-name, $values)
         
         let $results:= 
             for $s in $sql-statements
                 let $log := util:log("info", "SQL: " || $catalog-name || ":" || $s)
-                let $result := sql:execute($connection-handle, $s, false())
+                let $result := sql-utils:execute($handle, $s, false())
                 return
                     $result (: TODO : throw an error if no record updated :)
 (:                         and $result/@updateCount = 1) then:)
 
-        let $end   := sql:execute($connection-handle, "COMMIT", false())
+        let $end   := sql-utils:execute($handle, "COMMIT", false())
         let $log := util:log("info", "COMMIT TRANSACTION")
+        let $close-connection := sql-utils:close-connection($handle)
 
         let $result := map{ app:get-catalog-primary-key($catalog-name) : data($results) }
          
@@ -700,13 +698,15 @@ function app:post-catalog($catalog-name as xs:string, $catalog-entries) {
                 (: TODO ROOLBACK :)
     } catch sql:exception {
         let $log := util:log("info", "ROLLBACK TRANSACTION")
-        let $end :=sql:execute($connection-handle, "ROLLBACK", false())
+        let $end :=sql-utils:execute($handle, "ROLLBACK", false())
+        let $close-connection := sql-utils:close-connection($handle)
         let $msg := string-join( ($err:code, $err:description, $err:value, " module: ", $err:module, "(", $err:line-number, ",", $err:column-number, ")" ) )
         return 
             app:rest-response(400 (: Not Found :), $msg,  (), ())
     }catch * {
         let $log := util:log("info", "ROLLBACK TRANSACTION")
-        let $end :=sql:execute($connection-handle, "ROLLBACK", false())
+        let $end :=sql-utils:execute($handle, "ROLLBACK", false())
+        let $close-connection := sql-utils:close-connection($handle)
         let $msg := string-join( ($err:code, $err:description, $err:value, " module: ", $err:module, "(", $err:line-number, ",", $err:column-number, ")" ), ", ") 
         return 
             app:rest-response(400, $msg, (), ())
