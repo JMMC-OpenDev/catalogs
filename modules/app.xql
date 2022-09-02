@@ -520,6 +520,8 @@ declare function app:get-row-update-statement($catalog-name, $values) as xs:stri
         (: build set expr filtering ID value :)
         let $set-expr := app:get-row-set-expr(app:map-filter($values, $id-col-name))
         let $check-set := if(string-length($set-expr)>0) then () else error(xs:QName("app:missing-col"), "no value to update")
+        let $check-primary-key := if($id) then () else error(xs:QName("app:missing-key"), $id-col-name || " is mandatory")
+
         return
             string-join( ( "UPDATE", $catalog-name, "SET", $set-expr, "WHERE", $id-col-name || "='" || $id || "'" ), ' ')
 };
@@ -529,7 +531,7 @@ declare function app:get-row-insert-statement($catalog-name as xs:string, $array
     for $values in $array?*
         let $id-col-name := app:get-catalog-primary-key($catalog-name)
         let $keys := map:keys($values)
-        let $check-set := if(map:size($values)>0) then () else error(xs:QName("app:missing-col"), "no value to insert")
+        let $check-value := if(map:size($values)>0) then () else error(xs:QName("app:missing-col"), "no value to insert")
         let $columns := "( " || string-join($keys, ', ') || " )"
         let $vals := "( " || string-join( ( for $key in $keys return "'" || sql-utils:escape($values($key)) || "'"), ', ') || " )"
 
@@ -616,43 +618,50 @@ declare function app:update-catalog($catalog-name as xs:string, $values as array
 
         let $results:=
             for $s in $sql-statements
-                let $log := util:log("info", "SQL: " || $s)
+
                 let $result := sql:execute($connection-handle, $s, false())
+                (:
+                let $log := util:log("info", "SQL: " || $s)
                 let $log := util:log("info", "RESULT: " || serialize($result))
+                :)
                 return
-                    if ($result[name() = 'sql:exception'])
+                    if ($result/@updateCount=0)
                     then
-                        (
-                        (: util:log("info", serialize($result)), :)
-                        error(xs:QName('sql:exception'), $result//sql:message||" STATEMENT: "||$result//sql:sql  )
-                        )
+                        let $reason := 'Failed to update : record not found.'||" STATEMENT: "||$s
+                        return
+                            error(xs:QName('app:rest-error'), $reason, app:rest-response(404 (: Not Found :) , $reason , (), () ) )
+                    else if( $result[name() = 'sql:exception'] )
+                    then
+                        error(xs:QName('sql:exception'), $result//sql:message||" STATEMENT: "||$s  )
                     else
                         $result
-
-
         return
             if ($results/@updateCount >= 1) then
                 let $end   := sql:execute($connection-handle, "COMMIT", false())
+                let $close := sql:close-connection($connection-handle)
                 return
                     app:rest-response(204 (: No Content :) ,(),(),())
             else
                 let $end :=sql:execute($connection-handle, "ROLLBACK", false())
+                let $close := sql:close-connection($connection-handle)
                 return
-                    app:rest-response(404 (: Bad Request :) , 'Failed to update records.', (), () )
+                    app:rest-response(400 (: Bad Request :) , 'Failed to update records.', (), () )
     } catch app:rest-error {
         let $end :=sql:execute($connection-handle, "ROLLBACK", false())
+        let $close := sql:close-connection($connection-handle)
         return
             $err:value
     } catch sql:exception {
         let $end :=sql:execute($connection-handle, "ROLLBACK", false())
+        let $close := sql:close-connection($connection-handle)
         return
-            app:rest-response(400 (: Not Found :), 'Failed to update records : ' || string-join( ($err:code, $err:description, $err:value, " module: ", $err:module, "(", $err:line-number, ",", $err:column-number, ")" ) ), (), () )
+            app:rest-response(400 (: Bad Request :), 'Failed to update records : ' || string-join( ($err:code, $err:description, $err:value, " module: ", $err:module, "(", $err:line-number, ",", $err:column-number, ")" ) ), (), () )
     }catch * {
         let $end :=sql:execute($connection-handle, "ROLLBACK", false())
+        let $close := sql:close-connection($connection-handle)
         return
-            app:rest-response(500, string-join( ($err:code, $err:description, $err:value, " module: ", $err:module, "(", $err:line-number, ",", $err:column-number, ")" ), ", "), (), ())
+            app:rest-response(400 (: Bad Request :), string-join( ($err:code, $err:description, $err:value, " module: ", $err:module, "(", $err:line-number, ",", $err:column-number, ")" ), ", "), (), ())
     }
-
 };
 
 
@@ -696,6 +705,7 @@ function app:post-catalog($catalog-name as xs:string, $catalog-entries) {
 (:                         and $result/@updateCount = 1) then:)
 
         let $end   := sql:execute($connection-handle, "COMMIT", false())
+        let $close := sql:close-connection($connection-handle)
 
         let $result := map{ app:get-catalog-primary-key($catalog-name) : data($results) }
 
@@ -705,18 +715,20 @@ function app:post-catalog($catalog-name as xs:string, $catalog-entries) {
                 app:rest-response(200, () ,(), $result)
                 (: TODO COMMIT :)
             else if ($result/name() = 'sql:exception') then
-                app:rest-response(400 (: Not Found :) , 'Failed to insert records : ' || data($result//sql:message), (), ())
+                app:rest-response(400 (: Bad Request :) , 'Failed to insert records : ' || data($result//sql:message), (), ())
                 (: TODO ROLLBACK :)
             else
-                app:rest-response(404 (: Bad Request :) , 'Failed to insert records.', (), () )
+                app:rest-response(404 (: Not Found :) , 'Failed to insert records.', (), () )
                 (: TODO ROOLBACK :)
     } catch sql:exception {
         let $end :=sql:execute($connection-handle, "ROLLBACK", false())
+        let $close := sql:close-connection($connection-handle)
         let $msg := string-join( ($err:code, $err:description, $err:value, " module: ", $err:module||"(L"||$err:line-number||",C"||$err:column-number||")" ), ", ")
         return
             app:rest-response(400 (: Not Found :), $msg,  (), ())
     }catch * {
         let $end :=sql:execute($connection-handle, "ROLLBACK", false())
+        let $close := sql:close-connection($connection-handle)
         let $msg := string-join( ($err:code, $err:description, $err:value, " module: ", $err:module||"(L"||$err:line-number||",C"||$err:column-number||")" ), ", ")
         return
             app:rest-response(400, $msg, (), ())
