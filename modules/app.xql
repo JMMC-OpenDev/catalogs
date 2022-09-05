@@ -610,8 +610,6 @@ declare function app:update-catalog($catalog-name as xs:string, $values as array
     try {
         let $check-access := app:has-access($catalog-name, "r--") (: TODO replace by has rows access :)
 
-        (: TODO start transaction :)
-
         let $sql-statements := app:get-row-update-statement($catalog-name, $values)
 
         let $begin := sql:execute($connection-handle, "START TRANSACTION", false())
