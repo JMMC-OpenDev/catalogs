@@ -117,6 +117,10 @@ declare function app:get-metadata($catalog-name){
     return $json
 };
 
+(:~
+ :
+ :
+ :)
 declare function app:get-catalog-primary-key($catalog-name){
     if( starts-with($catalog-name, "spica_") and not (starts-with($catalog-name, "spica_cal" )) )
     then
@@ -127,6 +131,22 @@ declare function app:get-catalog-primary-key($catalog-name){
     else
         "id"
 };
+
+(:~
+ : Return the name of the column that is used by the API to automatically store mofifications.
+ : TODO search such info in the catalog metadata
+ : @param $catalog-name the name of catalog to update.
+ :
+ :
+ :)
+declare function app:get-catalog-lastmods($catalog-name){
+    if( starts-with($catalog-name, "spica_") and not (starts-with($catalog-name, "spica_cal" )) )
+    then
+        "lastmods" (: not sure we put it on first version but ok from 2022_03_30 :)
+    else
+        ()
+};
+
 
 declare function app:is-public($catalog-name as xs:string)
 {
@@ -504,26 +524,66 @@ declare function app:map-filter($map as map(*), $removed-keys as xs:string*){
     map:merge( map:for-each( $map, function ($k,$v) { map:entry($k, $v)[not($k=$removed-keys)] } ) )
 };
 
+(:~
+ : Return a sql fragment to be used inside an SQL UPDADE statement.
+ : @param $params map of properties to be updated.
+ :)
 declare function app:get-row-set-expr($params){
     string-join( map:for-each($params, function($k, $v){ $k || "='" || sql-utils:escape($v) || "'" }) ,', ' )
 };
 
+
+(:~
+ : Return a json fragment to describe given values.
+ : @param $params map of properties to be described.
+ :)
+declare function app:get-row-json-expr($params){
+    string-join( ("", map:for-each($params, function($k, $v){ "&quot;" || $k || "&quot;:&quot;" || sql-utils:escape($v) || "&quot;" }) ) ,', ' )
+};
+
+(:~
+ : Prepare an update statement plus associated history statement if table changes must be recorded.
+ :)
 declare function app:get-row-update-statement($catalog-name, $values) as xs:string*
 {
     let $array := if ($values instance of map()) then array { $values } else $values
 
     for $values in $array?*
+        (: get logic columns :)
         let $id-col-name := app:get-catalog-primary-key($catalog-name)
         let $id := $values($id-col-name)
-        (:    let $has-id := if ( empty($id) ) then error("id key must be present for update") else ():)
-
+        let $lastmods-col-name := app:get-catalog-lastmods($catalog-name)
         (: build set expr filtering ID value :)
-        let $set-expr := app:get-row-set-expr(app:map-filter($values, $id-col-name))
+        let $values-to-update := app:map-filter($values, ($id-col-name, $lastmods-col-name))
+        let $set-expr := app:get-row-set-expr($values-to-update)
+        (: check we have enough to work on :)
         let $check-set := if(string-length($set-expr)>0) then () else error(xs:QName("app:missing-col"), "no value to update")
         let $check-primary-key := if($id) then () else error(xs:QName("app:missing-key"), $id-col-name || " is mandatory")
 
+        let $update-statement := string-join( ( "UPDATE", $catalog-name, "SET", $set-expr, "WHERE", $id-col-name || "='" || $id || "'" ), ' ')
+        (: prepare json like history :)
+        let $history-statement := if($lastmods-col-name) then
+            let $history-prefix := '[{"history":"API"}'
+            let $history-json := app:get-row-json-expr($values-to-update)
+            let $history-info := <info>{{"utc":"{current-dateTime()}", "by":"{sm:id()//sm:username}"{$history-json}}}</info>
+            let $check-json := parse-json($history-info)
+            return
+            <statement>
+            UPDATE {$catalog-name}
+            SET
+              {$lastmods-col-name} = CASE
+              WHEN {$lastmods-col-name} IS NULL OR {$lastmods-col-name} = '' THEN
+                '{$history-prefix},{$history-info} ]'
+              ELSE
+                REPLACE({$lastmods-col-name}, '{$history-prefix}','{$history-prefix},{$history-info}')
+              END
+            WHERE
+              {$id-col-name}='{$id}'
+            </statement>
+            else
+                ()
         return
-            string-join( ( "UPDATE", $catalog-name, "SET", $set-expr, "WHERE", $id-col-name || "='" || $id || "'" ), ' ')
+            ( $update-statement, $history-statement )
 };
 
 declare function app:get-row-insert-statement($catalog-name as xs:string, $array as array(*)) as xs:string*
