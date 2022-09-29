@@ -6,7 +6,7 @@ import module namespace templates="http://exist-db.org/xquery/templates" ;
 import module namespace config="http://exist.jmmc.fr/catalogs/config" at "config.xqm";
 
 import module namespace oidb-config="http://apps.jmmc.fr/exist/apps/oidb/config" at "../../oidb/modules/config.xqm";
-
+import module namespace user="http://apps.jmmc.fr/exist/apps/oidb/restxq/user" at "../../oidb/modules/rest/user.xqm";
 
 import module namespace sql-utils="http://apps.jmmc.fr/exist/apps/oidb/sql-utils" at "../../oidb/modules/sql-utils.xql";
 import module namespace log="http://apps.jmmc.fr/exist/apps/oidb/log" at "../../oidb/modules/log.xqm";
@@ -15,17 +15,16 @@ import module namespace oidb-tap="http://apps.jmmc.fr/exist/apps/oidb/tap" at ".
 
 import module namespace jmmc-tap="http://exist.jmmc.fr/jmmc-resources/tap" at "/db/apps/jmmc-resources/content/jmmc-tap.xql";
 
-
-
 import module namespace sql="http://exist-db.org/xquery/sql";
 
 import module namespace http = "http://expath.org/ns/http-client";
+
 declare namespace output = "http://www.w3.org/2010/xslt-xquery-serialization";
 declare namespace rest="http://exquery.org/ns/restxq";
-
-declare namespace xsns="http://www.w3.org/2001/XMLSchema";
+(:declare namespace xsns="http://www.w3.org/2001/XMLSchema"; :)
 
 declare variable $app:ACCESS_LABEL := map { true() : "" , false() : <i class="glyphicon glyphicon-lock" aria-hidden="true"/>};
+
 (:
  : - try not to return 500 errors and prefer 400 so the client will consume and not loop over with retries
  : - check authentication for every sensible operations :
@@ -192,16 +191,85 @@ declare function app:get-catalog-pi-name($catalog-name as xs:string){
         "datapi"
 };
 
+declare
+    %rest:PUT("{$delegations}")
+    %rest:path("/catalogs/delegations")
+    %rest:consumes("application/json")
+    %rest:produces("application/json")
+    %output:method("json")
+function app:update-delegations($delegations) {
+    let $json := parse-json(util:base64-decode($delegations))
+    let $json := if ($json instance of xs:string) then parse-json($json) else $json (: We can get the json or its string serialization :)
+    return $json
+};
+
+declare function app:get-pi-delegations($pi as xs:string){
+    array {
+        for $delegation in user:get-delegations($pi)//delegation
+            return
+                map:merge((
+                    ( $delegation/catalogs,$delegation/collections) ! map { name(.) : data(.) }
+                    ,map{ "coi": array{ data($delegation/alias) } }
+                ))
+    }
+};
+
+declare
+    %rest:GET
+    %rest:path("/catalogs/delegations")
+    %rest:produces("application/json")
+    %rest:query-param("pi", "{$pi}")
+    %output:method("json")
+function app:get-delegations($pi as xs:string*) {
+    try{
+        (: throw error if not authenticated anonymous calls :)
+        let $check-auth := app:is-authenticated()
+        (: TODO limit to admins? or logged user
+            if admin list every delegation else restrict to the logged user associated pi name
+        :)
+        let $pi := if ($pi) then $pi else data(sm:id()//*:username)
+        let $delegations := app:get-pi-delegations($pi)
+        return
+            map{
+                "pi" : $pi
+                ,"delegations": $delegations
+                ,"login": data(sm:id()//*:username)
+            }
+    } catch app:rest-error {
+        $err:value
+    } catch * {
+        app:rest-response(400,string-join( ($err:code, $err:description, $err:value, " module: ", $err:module, "(", $err:line-number, ",", $err:column-number, ")" ), ", "), (), ())
+    }
+};
+
 declare function app:get-pi-aliases($login) {
-    let $datapis := data(doc("/db/apps/oidb-data/people/people.xml")//person[.//@email=$login]/alias)
+    let $datapis := data($user:people-doc//person[.//@email=$login]/alias)
     let $log := util:log("info" ,"aliases found for login=" || $login || " : " ||string-join($datapis, ", "))
     return $datapis
 };
 
-declare function app:is-pi-valid($login, $piname){
-  $piname ! upper-case(.) = app:get-pi-aliases($login)! upper-case(.)
+(:~
+ : Test if an alias associated to the given login is in the catalog delegation of the given pi.
+ :)
+declare function app:is-pi-valid($login, $piname, $catalog-name){
+    let $coi-aliases := app:get-pi-aliases($login)
+    let $test := $piname ! upper-case(.) = app:get-pi-aliases($login) ! upper-case(.)
+    let $test := if($test) then $test
+        else
+            exists( user:get-delegations($piname)//delegation[ catalogs[starts-with($catalog-name, .)] and alias=$coi-aliases] )
+    return
+        $test
 };
 
+(:~
+ : Check that given user has access to the catalog.
+ : Ok if :
+ : - the catalog is public
+ : - pi of given record is associated to the given login or one if its delegated coi.
+ : else the access refused.
+ : TODO :
+ : - handle mode
+ :)
 declare function app:has-row-access($catalog-name as xs:string, $id as xs:integer, $mode as xs:string)
 {
     if(app:is-public($catalog-name)) then
@@ -219,7 +287,7 @@ declare function app:has-row-access($catalog-name as xs:string, $id as xs:intege
                 let $log := util:log("info" ,"piname for record id="||$id|| " is "|| $piname)
 
                 return
-                    if (app:is-pi-valid(sm:id()//*:username, $piname)) then
+                    if (app:is-pi-valid(sm:id()//*:username, $piname, $catalog-name)) then
                         true()
                     else
                         let $reason := "Operation restricted to record's owner(" || $piname || "), delegated users or admins" (: Can we show here the PI value :)
@@ -243,8 +311,11 @@ declare function app:is-authenticated() {
 };
 
 declare function app:is-admin($catalog-name as xs:string) {
+    let $always-admin := false()
+    (: uncomment next line to simulate admin behaviour :)
+    (: let $always-admin := true() :)
     (: ok if catalog-name starts with one group of the authenticated user :)
-    if ( false() or sm:id()//*:username=("guillaume.mella@obs.ujf-grenoble.fr") or starts-with( $catalog-name, sm:id()//*:group) ) then
+    return if ( $always-admin or starts-with( $catalog-name, sm:id()//*:group) ) then
         (
             util:log("info", "user "||sm:id()//sm:username||" is admin for " || $catalog-name ),
             true()
@@ -365,14 +436,14 @@ declare %private function app:sql-query($params) {
  : Return pis.
  :
  : @param $catalog-name the name of the catalog to find pi into.
- : @return a list of pis with their login if found in the database.
+ : @return a list of pis with their login if found in the database and associated .
  :)
+(:     %output:media-type("application/json") :)
 declare
     %rest:GET
-    %rest:produces("application/json")
-    %output:media-type("application/json")
-    %output:method("json")
     %rest:path("/catalogs/accounts/{$catalog-name}")
+    %rest:produces("application/json")
+    %output:method("json")
 function app:get-catalog-pis($catalog-name as xs:string) {
     try {
         (: throw error if not authenticated anonymous calls :)
@@ -383,17 +454,14 @@ function app:get-catalog-pis($catalog-name as xs:string) {
 
         let $catpis := oidb-tap:execute(adql:build-query(('catalog='||$catalog-name,'col='||$picol,'distinct')))
 
-        let $datapis := doc("/db/apps/oidb-data/people/people.xml")//person[alias/@email]
+        let $datapis := $user:people-doc//person[alias/@email]
         let $res :=
-        <res>
-            {
-                for $pi in data($catpis//*:TD) return
-                    <pi>
-                        <name>{$pi}</name>
-                        {for $datapi in $datapis[alias[upper-case(.)=upper-case($pi)]] return <login>{string(($datapi//@email)[1])}</login> }
-                    </pi>
-            }
-        </res>
+        map {
+            "admins": "TODO",
+            "pi" : array {
+            for $pi in data($catpis//*:TD) return
+                map{ "name":$pi , "login": data($datapis[alias[upper-case(.)=upper-case($pi)]]//@email)[1] , "delegations": app:get-pi-delegations($pi) }
+        }}
         return
             $res
     } catch app:rest-error {
@@ -402,7 +470,6 @@ function app:get-catalog-pis($catalog-name as xs:string) {
         app:rest-response(400,string-join( ($err:code, $err:description, $err:value, " module: ", $err:module, "(", $err:line-number, ",", $err:column-number, ")" ), ", "), (), ())
     }
 };
-
 
 (:~
  : Return the catalog list.
@@ -670,13 +737,16 @@ declare function app:update-catalog($catalog-name as xs:string, $values as array
     try {
         let $check-access := app:has-access($catalog-name, "r--") (: TODO replace by has rows access :)
 
+        let $id-col-name := app:get-catalog-primary-key($catalog-name)
+        let $ids := for $row in $values?* return $row($id-col-name)
+        let $log := util:log("info", "ids to be updated : "|| string-join($ids))
+        let $check := for $id in $ids  return app:has-row-access($catalog-name, $id, "r--") (: TODO think about grouping for optimisation :)
         let $sql-statements := app:get-row-update-statement($catalog-name, $values)
 
         let $begin := sql:execute($connection-handle, "START TRANSACTION", false())
 
         let $results:=
             for $s in $sql-statements
-
                 let $result := sql:execute($connection-handle, $s, false())
                 (:
                 let $log := util:log("info", "SQL: " || $s)
@@ -793,6 +863,26 @@ function app:post-catalog($catalog-name as xs:string, $catalog-entries) {
     }
 };
 
+
+(:~
+ : test endpoint
+ :)
+declare
+    %rest:GET
+    %rest:path("/catalogs/test")
+    %rest:produces("application/json")
+    %output:method("json")
+function app:test() {
+    array{map{
+        "login" : data(sm:id()//*:username)
+        ,"groups" : string-join(sm:id()//*:group, ", ")
+        ,"pi-aliases" : string-join(app:get-pi-aliases(sm:id()//*:username), ", ")
+        (: ,"oidb-config": $oidb-config:data-root :)
+        (: ,"jndi-name" : sql-utils:get-jndi-name() :)
+        ,"nb_people" : count($user:people-doc//person)
+        ,"nb_people_with_delegation" : count($user:people-doc//person[.//delegation/*])
+    }}
+};
 
 (: -------------------------------
  : UNFINISHED BELOW ....
