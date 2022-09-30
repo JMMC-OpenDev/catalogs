@@ -459,7 +459,7 @@ function app:get-catalog-pis($catalog-name as xs:string) {
         map {
             "admins": "TODO",
             "pi" : array {
-            for $pi in data($catpis//*:TD) return
+            for $pi in data($catpis//*:TD) order by $pi return
                 map{ "name":$pi , "login": data($datapis[alias[upper-case(.)=upper-case($pi)]]//@email)[1] , "delegations": app:get-pi-delegations($pi) }
         }}
         return
@@ -605,7 +605,7 @@ declare function app:get-row-set-expr($params){
  : @param $params map of properties to be described.
  :)
 declare function app:get-row-json-expr($params){
-    string-join( ("", map:for-each($params, function($k, $v){ "&quot;" || $k || "&quot;:&quot;" || sql-utils:escape($v) || "&quot;" }) ) ,', ' )
+    string-join( ("", map:for-each($params, function($k, $v){ "&quot;" || $k || "&quot;:&quot;" || replace(sql-utils:escape($v),"&quot;","\\&quot;") || "&quot;" }) ) ,', ' )
 };
 
 (:~
@@ -869,17 +869,24 @@ function app:post-catalog($catalog-name as xs:string, $catalog-entries) {
  :)
 declare
     %rest:GET
-    %rest:path("/catalogs/test")
+    %rest:path("/catalogs/status")
     %rest:produces("application/json")
     %output:method("json")
-function app:test() {
+function app:status() {
+    let $all-aliases := $user:people-doc//alias
+    let $count-aliases := count($all-aliases)
+    return 
     array{map{
+(:        "version" : $config:expath-descriptor//@version:)
+(:        ,"status" : data($config:repo-descriptor//status):)
         "login" : data(sm:id()//*:username)
         ,"groups" : string-join(sm:id()//*:group, ", ")
         ,"pi-aliases" : string-join(app:get-pi-aliases(sm:id()//*:username), ", ")
         (: ,"oidb-config": $oidb-config:data-root :)
         (: ,"jndi-name" : sql-utils:get-jndi-name() :)
         ,"nb_people" : count($user:people-doc//person)
+        ,"nb_aliases" : $count-aliases
+        ,"uniq_aliases" : count(distinct-values($all-aliases)) = $count-aliases
         ,"nb_people_with_delegation" : count($user:people-doc//person[.//delegation/*])
     }}
 };
