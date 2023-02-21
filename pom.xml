@@ -5,11 +5,12 @@
 
     <parent>
         <groupId>fr.jmmc</groupId>
-        <artifactId>exist</artifactId>
+        <artifactId>jmmc</artifactId>
         <version>TRUNK</version>
+        <relativePath/>
     </parent>
 
-    <groupId>fr.jmmc.exist</groupId>
+    <groupId>fr.jmmc</groupId>
     <artifactId>catalogs</artifactId>
 
     <packaging>pom</packaging>
