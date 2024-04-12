@@ -56,6 +56,7 @@ declare function app:catalogs-table($node as node(), $model as map(*)) {
             <tbody>
             {
                 let $cats := app:get-catalogs()
+                let $log := util:log("info", $cats)
                 for $name in map:keys($cats) order by $name
                     let $desc := $cats($name)
                     return
@@ -186,7 +187,7 @@ declare function app:get-catalog-pi-name($catalog-name as xs:string){
     (: TODO retrieve using ucd data pi:)
     if( starts-with($catalog-name, "spica_") )
     then
-        "piname"
+        ("piname","piname2")
     else
         "datapi"
 };
@@ -251,14 +252,35 @@ declare function app:get-pi-aliases($login) {
 (:~
  : Test if an alias associated to the given login is in the catalog delegation of the given pi.
  :)
-declare function app:is-pi-valid($login, $piname, $catalog-name){
+declare function app:is-pi-valid($login, $pinames, $catalog-name){
     let $coi-aliases := app:get-pi-aliases($login)
-    let $test := $piname ! upper-case(.) = app:get-pi-aliases($login) ! upper-case(.)
+    let $test := $pinames ! upper-case(.) = app:get-pi-aliases($login) ! upper-case(.)
     let $test := if($test) then $test
         else
-            exists( user:get-delegations($piname)//delegation[ catalogs[starts-with($catalog-name, .)] and alias=$coi-aliases] )
+            exists( for $piname in $pinames return user:get-delegations($piname)//delegation[ catalogs[starts-with($catalog-name, .)] and alias=$coi-aliases] )
     return
         $test
+};
+
+(:~
+ : Get pi names for a given record of specific catalog.
+ :)
+declare function app:get-pinames($catalog-name as xs:string, $id as xs:integer?) as xs:string*
+{
+    let $pi-colnames := app:get-catalog-pi-name($catalog-name)
+    let $primary-key := app:get-catalog-primary-key($catalog-name)
+    let $piname := try {
+            let $pcol := $pi-colnames ! concat("col=",.)
+            let $r := app:sql-query(("catalog="||$catalog-name, $pcol, "id="||$primary-key||":"||$id))
+            return
+                for $pi in $r?* where $pi return $pi
+        } catch * {
+            util:log("error", string-join(($err:code, $err:description, $err:value, " module: ", $err:module, "(", $err:line-number, ",", $err:column-number, ")" ), ", "))
+            ,util:log("info" ,"can't find piname for record id="||$id|| " in  "|| $catalog-name || " : pi-colnames="||string-join($pi-colnames, ","))
+        }
+    let $log := util:log("info" ,"piname for record id="||$id|| " is "|| string-join($piname, ","))
+    return
+        $piname
 };
 
 (:~
@@ -268,7 +290,7 @@ declare function app:is-pi-valid($login, $piname, $catalog-name){
  : - pi of given record is associated to the given login or one if its delegated coi.
  : else the access refused.
  : TODO :
- : - handle mode
+ : - handle mode, test pi before admin ?
  :)
 declare function app:has-row-access($catalog-name as xs:string, $id as xs:integer, $mode as xs:string)
 {
@@ -280,17 +302,12 @@ declare function app:has-row-access($catalog-name as xs:string, $id as xs:intege
             if ($is-admin) then
                 true()
             else
-                let $pi-colname := app:get-catalog-pi-name($catalog-name)
-                let $primary-key := app:get-catalog-primary-key($catalog-name)
-                let $piname :=  app:sql-query(("catalog="||$catalog-name, "col="||$pi-colname, "id="||$primary-key||":"||$id))
-                let $piname := try { $piname?* } catch * { () }
-                let $log := util:log("info" ,"piname for record id="||$id|| " is "|| $piname)
-
+                let $pinames := app:get-pinames($catalog-name, $id)
                 return
-                    if (app:is-pi-valid(sm:id()//*:username, $piname, $catalog-name)) then
+                    if (app:is-pi-valid(sm:id()//*:username, $pinames, $catalog-name)) then
                         true()
                     else
-                        let $reason := "Operation restricted to record's owner(" || $piname || "), delegated users or admins" (: Can we show here the PI value :)
+                        let $reason := "Operation restricted to record's owner(" || string-join($pinames, " / ") || "), delegated users or admins" (: Can we show here the PI value :)
                         return error(
                                 xs:QName("app:rest-error"), $reason,
                                 app:rest-response(401,$reason)
@@ -431,7 +448,6 @@ declare %private function app:sql-query($params) {
     }
 };
 
-
 (:~
  : Return pis.
  :
@@ -450,16 +466,17 @@ function app:get-catalog-pis($catalog-name as xs:string) {
         let $check-auth := app:is-authenticated()
 
         (: TODO generalise : hardcoded for spica and oidb : prefer to look at catalog metadata :)
-        let $picol := app:get-catalog-pi-name($catalog-name)
+        let $picols := app:get-catalog-pi-name($catalog-name)
 
-        let $catpis := oidb-tap:execute(adql:build-query(('catalog='||$catalog-name,'col='||$picol,'distinct')))
+        let $catpis := for $picol in $picols return oidb-tap:execute(adql:build-query(('catalog='||$catalog-name, 'col='||$picol ,'distinct')))
+        let $catpis := distinct-values($catpis//*:TD)[string-length(.)>0]
 
         let $datapis := $user:people-doc//person[alias/@email]
         let $res :=
         map {
             "admins": "TODO",
             "pi" : array {
-            for $pi in data($catpis//*:TD) order by $pi return
+            for $pi in $catpis order by $pi return
                 map{ "name":$pi , "login": data($datapis[alias[upper-case(.)=upper-case($pi)]]//@email)[1] , "delegations": app:get-pi-delegations($pi) }
         }}
         return
@@ -596,7 +613,11 @@ declare function app:map-filter($map as map(*), $removed-keys as xs:string*){
  : @param $params map of properties to be updated.
  :)
 declare function app:get-row-set-expr($params){
-    string-join( map:for-each($params, function($k, $v){ $k || "='" || sql-utils:escape($v) || "'" }) ,', ' )
+    string-join( map:for-each($params, function($k, $v){
+        let $v := if (exists($v)) then "'" || sql-utils:escape($v) || "'" else "null"
+        return
+            $k || "=" || $v
+    }) ,', ' )
 };
 
 
@@ -620,7 +641,7 @@ declare function app:get-row-update-statement($catalog-name, $values) as xs:stri
         let $id-col-name := app:get-catalog-primary-key($catalog-name)
         let $id := $values($id-col-name)
         let $lastmods-col-name := app:get-catalog-lastmods($catalog-name)
-        (: build set expr filtering ID value :)
+        (: build set expr filtering some columns TODO check if with should add picolumns (excepted for admin?) :)
         let $values-to-update := app:map-filter($values, ($id-col-name, $lastmods-col-name))
         let $set-expr := app:get-row-set-expr($values-to-update)
         (: check we have enough to work on :)
@@ -875,7 +896,7 @@ declare
 function app:status() {
     let $all-aliases := $user:people-doc//alias
     let $count-aliases := count($all-aliases)
-    return 
+    return
     array{map{
 (:        "version" : $config:expath-descriptor//@version:)
 (:        ,"status" : data($config:repo-descriptor//status):)

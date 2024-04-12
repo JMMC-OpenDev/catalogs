@@ -14,6 +14,14 @@
 
     <note/>
     <changelog>
+        <change xmlns="" version="0.8">
+           <h3>30 september 2022</h3>
+            <ul>
+              <li>Provide delegations associated to pis accounts.</li>
+              <li>Enhance permissions control (accept more than one pi column).</li>
+              <li>Support to set null values (using None in our a2p2 python client).</li>
+            </ul>
+        </change>
          <change xmlns="" version="0.7">
            <h3>20 march 2022</h3>
             <ul>
