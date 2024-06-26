@@ -74,13 +74,77 @@ declare function app:catalogs-table($node as node(), $model as map(*)) {
  : @param $node the HTML node with the attribute which triggered this call
  : @param $model a map containing arbitrary data - used to pass information between template calls
  :)
-declare function app:show-catalog($node as node(), $model as map(*), $name as xs:string) {
+declare function app:show-catalog($node as node(), $model as map(*), $name as xs:string, $table as xs:string?) {
+    if(exists($table))
+    then app:show-catalog-table($node, $model, $name)
+    else app:show-catalog-desc($node, $model, $name)
+};
+
+(:~
+ : Generates table of catalog.
+ :
+ : @param $node the HTML node with the attribute which triggered this call
+ : @param $model a map containing arbitrary data - used to pass information between template calls
+ :)
+declare function app:show-catalog-table($node as node(), $model as map(*), $name as xs:string) {
+    let $primary-key := app:get-catalog-primary-key($name)
+    let $metadata := app:get-metadata($name)
+
+    (:
+    prefer progressiveLoad which can sort whole content. TODO check on large catalogs...
+    pagination:true, //enable pagination
+    paginationMode:"remote", //enable remote pagination
+    paginationSize:100, //optional parameter to request a certain number of rows per page
+     :)
+    return
+    <div>
+        <div id="example-table"></div>
+        <script>
+            //Build Tabulator
+            var table = new Tabulator("#example-table", {{
+                index:"{$primary-key}",
+                progressiveLoad:"load",
+                paginationSize:10000,
+                height:"500px",
+                layout:"fitColumns",
+                placeholder:"No Data Set",
+                columns:[
+                    {
+                        for $meta in $metadata return '{title:"'||$meta("name")||'", field:"'||$meta("name")||'" , editor:"input" },'
+                    }
+                ],
+                initialSort:[             //set the initial sort order of the data
+                {{column:"name", dir:"asc"}},
+                ],
+                ajaxURL:"./modules/tabular-data.xql", //set url for ajax request
+                ajaxParams:{{catalog:"{$name}"}}, //set any standard parameters to pass with the request
+            }});
+
+            table.on("cellEdited", function(cell){{
+                console.log("edited cell : "+ cell);
+            }});
+
+            //trigger AJAX load on "Load Data via AJAX" button click
+            document.getElementById("ajax-trigger").addEventListener("click", function(){{
+                table.setData("./modules/tabular-data.xql?catalog={encode-for-uri($name)}");
+            }});
+        </script>
+    </div>
+};
+
+(:~
+ : Generates description of catalog.
+ :
+ : @param $node the HTML node with the attribute which triggered this call
+ : @param $model a map containing arbitrary data - used to pass information between template calls
+ :)
+declare function app:show-catalog-desc($node as node(), $model as map(*), $name as xs:string) {
     let $c := if( request:get-parameter("clear-cache", () ) ) then ( cache:clear(),  <div class="alert alert-warning" role="alert"> Cache cleared. </div> ) else ()
     let $primary-key := app:get-catalog-primary-key($name)
     let $metadata := app:get-metadata($name)
 (:    :)
-    let $keys := distinct-values( ("name", "description"))
     let $keys := distinct-values( ("name", "description", for $m in $metadata return map:keys($m)))
+    let $max-len := 200
     return
     <div>
         <h1>{$name} catalog </h1>
@@ -97,11 +161,19 @@ declare function app:show-catalog($node as node(), $model as map(*), $name as xs
                 return
                     <tr>{
                         let $elname := if( $primary-key=$meta("name") ) then "b" else "span"
-                        for $key in $keys return <td>{element {$elname} {$meta($key)}}</td>}</tr>
+                        for $key in $keys
+                            let $value := $meta($key)
+                            let $value := if(string-length($value)>$max-len) then <span title="{$value}">{substring($value,1,$max-len)}...</span> else $value
+                            return <td>{element {$elname} {$value}}</td>}</tr>
             }
             </tbody>
             </table>
         </div>
+         <p>Please find some links to check/improve your table metadata :<ul>
+            <li><a href="http://dc.zah.uni-heidelberg.de/ucds/ui/ui/form">using GAVO's UCD resolver</a></li>
+            <li><a href="http://cdsarc.u-strasbg.fr/doc/catstd.htx">Standards for Astronomical Catalogues provided by CDS</a></li>
+            <li><a href="https://www.iau.org/publications/proceedings_rules/units/">IAU Recommendations concerning Units</a></li>
+            </ul></p>
     </div>
 
 (:    return <pre>TODO</pre>:)
