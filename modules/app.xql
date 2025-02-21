@@ -194,12 +194,15 @@ declare function app:get-metadata($catalog-name){
  :
  :)
 declare function app:get-catalog-primary-key($catalog-name){
-    if( starts-with($catalog-name, "spica_") and not (starts-with($catalog-name, "spica_cal" )) )
+    if( starts-with($catalog-name, "spica") and not (matches($catalog-name, "spica_cal|spica_followup|spica_test_followup" )) )
     then
         "spicadb_id"
     else if(starts-with($catalog-name, "obsportal"))
     then
         "exp_id"
+    else if(matches($catalog-name, "spica_followup|spica_test_followup"))
+    then
+        "tpl_start"
     else
         "id"
 };
@@ -212,13 +215,12 @@ declare function app:get-catalog-primary-key($catalog-name){
  :
  :)
 declare function app:get-catalog-lastmods($catalog-name){
-    if( starts-with($catalog-name, "spica_") and not (starts-with($catalog-name, "spica_cal" )) )
+    if( starts-with($catalog-name, "spica") and not (matches($catalog-name, "spica_cal|spica_test_followup|spica_followup" )) )
     then
         "lastmods" (: not sure we put it on first version but ok from 2022_03_30 :)
     else
         ()
 };
-
 
 declare function app:is-public($catalog-name as xs:string)
 {
@@ -257,9 +259,12 @@ declare function app:has-access($catalog-name as xs:string, $mode as xs:string)
 
 declare function app:get-catalog-pi-name($catalog-name as xs:string){
     (: TODO retrieve using ucd data pi:)
-    if( starts-with($catalog-name, "spica_") )
+    if( starts-with($catalog-name, "spica") )
     then
-        ("piname","piname2")
+        if ( matches($catalog-name, "spica_cal|spica_followup|spica_test_followup" ) ) then
+            "piname"
+        else
+            ("piname","piname2")
     else
         "datapi"
 };
@@ -336,8 +341,9 @@ declare function app:is-pi-valid($login, $pinames, $catalog-name){
 
 (:~
  : Get pi names for a given record of specific catalog.
+ : / can be used to split multiples pis in the same field
  :)
-declare function app:get-pinames($catalog-name as xs:string, $id as xs:integer?) as xs:string*
+declare function app:get-pinames($catalog-name as xs:string, $id as xs:string?) as xs:string*
 {
     let $pi-colnames := app:get-catalog-pi-name($catalog-name)
     let $primary-key := app:get-catalog-primary-key($catalog-name)
@@ -345,7 +351,7 @@ declare function app:get-pinames($catalog-name as xs:string, $id as xs:integer?)
             let $pcol := $pi-colnames ! concat("col=",.)
             let $r := app:sql-query(("catalog="||$catalog-name, $pcol, "id="||$primary-key||":"||$id))
             return
-                for $pi in $r?* where $pi return $pi
+                for $pi in $r?* where $pi return for $e in tokenize($pi, "/") return normalize-space($e)
         } catch * {
             util:log("error", string-join(($err:code, $err:description, $err:value, " module: ", $err:module, "(", $err:line-number, ",", $err:column-number, ")" ), ", "))
             ,util:log("info" ,"can't find piname for record id="||$id|| " in  "|| $catalog-name || " : pi-colnames="||string-join($pi-colnames, ","))
@@ -364,11 +370,12 @@ declare function app:get-pinames($catalog-name as xs:string, $id as xs:integer?)
  : TODO :
  : - handle mode, test pi before admin ?
  :)
-declare function app:has-row-access($catalog-name as xs:string, $id as xs:integer, $mode as xs:string)
+declare function app:has-row-access($catalog-name as xs:string, $id as xs:string, $mode as xs:string)
 {
-    if(app:is-public($catalog-name)) then
+    (: if(app:is-public($catalog-name)) then
         true()
     else
+        :)
         let $is-admin := try{ let $t := app:is-admin($catalog-name) return true() } catch * { false() }
         return
             if ($is-admin) then
@@ -409,9 +416,19 @@ declare function app:is-admin($catalog-name as xs:string) {
             util:log("info", "user "||sm:id()//sm:username||" is admin for " || $catalog-name ),
             true()
         )
+    else if (sm:id()//sm:username="spica-qcs@jmmc.fr" ) then
+        (
+            util:log("info", "user "||sm:id()//sm:username||" is admin for " || $catalog-name ),
+            true()
+        )
+    else if ( $catalog-name="spica_s05" and sm:id()//sm:username="nayeem.ebrahimkutty@oca.eu" ) then
+        (
+            util:log("info", "user "||sm:id()//sm:username||" is admin for " || $catalog-name ),
+            true()
+        )
     else
         let $log := util:log("info", "user "||sm:id()//sm:username||" is not admin for " || $catalog-name )
-        let $reason := "Operation restricted to admin roles"
+        let $reason := "Operation restricted to admin roles : user "||sm:id()//sm:username||" is not admin for " || $catalog-name
         return
             error(
                 xs:QName("app:rest-error"), $reason,
@@ -646,9 +663,9 @@ declare
     %rest:path("/catalogs/{$catalog-name}/{$id}")
     %output:media-type("application/json")
     %output:method("json")
-function app:get-catalog-row($catalog-name as xs:string, $id as xs:integer) {
+function app:get-catalog-row($catalog-name as xs:string, $id as xs:string) {
     try{
-        let $check-access := app:has-row-access($catalog-name, $id, "r--")
+(:        let $check-access := app:has-row-access($catalog-name, $id, "r--"):)
         let $primary-key := app:get-catalog-primary-key($catalog-name)
         return
             app:sql-query(("catalog=" || $catalog-name, "id="||$primary-key||":"||$id))
@@ -685,11 +702,7 @@ declare function app:map-filter($map as map(*), $removed-keys as xs:string*){
  : @param $params map of properties to be updated.
  :)
 declare function app:get-row-set-expr($params){
-    string-join( map:for-each($params, function($k, $v){
-        let $v := if (exists($v)) then "'" || sql-utils:escape($v) || "'" else "null"
-        return
-            $k || "=" || $v
-    }) ,', ' )
+    string-join( map:for-each($params, function($k, $v){ $k || "='" || sql-utils:escape($v) || "'" }) ,', ' )
 };
 
 
@@ -713,7 +726,8 @@ declare function app:get-row-update-statement($catalog-name, $values) as xs:stri
         let $id-col-name := app:get-catalog-primary-key($catalog-name)
         let $id := $values($id-col-name)
         let $lastmods-col-name := app:get-catalog-lastmods($catalog-name)
-        (: build set expr filtering some columns TODO check if with should add picolumns (excepted for admin?) :)
+        (: build set expr filtering some columns:)
+        (: TODO add picolumns (excepted for admin?) :)
         let $values-to-update := app:map-filter($values, ($id-col-name, $lastmods-col-name))
         let $set-expr := app:get-row-set-expr($values-to-update)
         (: check we have enough to work on :)
