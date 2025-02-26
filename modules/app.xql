@@ -554,13 +554,14 @@ function app:get-catalog-pis($catalog-name as xs:string) {
         (: throw error if not authenticated anonymous calls :)
         let $check-auth := app:is-authenticated()
 
-        (: TODO generalise : hardcoded for spica and oidb : prefer to look at catalog metadata :)
-        let $picols := app:get-catalog-pi-name($catalog-name)
-
-        let $catpis := for $picol in $picols return oidb-tap:execute(adql:build-query(('catalog='||$catalog-name, 'col='||$picol ,'distinct')))
-        let $catpis := distinct-values($catpis//*:TD)[string-length(.)>0]
-
         let $datapis := $user:people-doc//person[alias/@email]
+        let $authenticated-pinames := data($datapis[alias[@email=data(sm:id()//*:username)]]/alias)
+
+        let $picols := app:get-catalog-pi-name($catalog-name)
+        let $catpis := for $picol in $picols return oidb-tap:execute(adql:build-query(('catalog='||$catalog-name, 'col='||$picol ,'distinct')))
+
+        let $catpis := distinct-values(($authenticated-pinames, $catpis//*:TD) )[string-length(.)>0]
+
         let $res :=
         map {
             "admins": "TODO",
