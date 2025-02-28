@@ -382,6 +382,7 @@ declare function app:has-row-access($catalog-name as xs:string, $id as xs:string
                 true()
             else
                 let $pinames := app:get-pinames($catalog-name, $id)
+                let $log := util:log("info" ,"pinames for record id="||$id|| " is "|| string-join($pinames, ","))
                 return
                     if (app:is-pi-valid(sm:id()//*:username, $pinames, $catalog-name)) then
                         true()
@@ -567,7 +568,10 @@ function app:get-catalog-pis($catalog-name as xs:string) {
             "admins": "TODO",
             "pi" : array {
             for $pi in $catpis order by $pi return
-                map{ "name":$pi , "login": data($datapis[alias[upper-case(.)=upper-case($pi)]]//@email)[1] , "delegations": app:get-pi-delegations($pi) }
+                let $person := $datapis[alias[upper-case(.)=upper-case($pi)]]
+                return
+                map{ "name":$pi , "login": data($person//@email)[1] , "delegations": app:get-pi-delegations($pi)
+                ,"firstname":data($person/firstname), "lastname":data($person/lastname)}
         }}
         return
             $res
@@ -703,7 +707,15 @@ declare function app:map-filter($map as map(*), $removed-keys as xs:string*){
  : @param $params map of properties to be updated.
  :)
 declare function app:get-row-set-expr($params){
-    string-join( map:for-each($params, function($k, $v){ $k || "='" || sql-utils:escape($v) || "'" }) ,', ' )
+(:  :    let $log:= util:log("info", $params)
+    return
+   :)
+    string-join(
+        map:for-each($params, function($k, $v){
+            if(exists($v)) then $k || "='" || sql-utils:escape($v) || "'" else $k || "=null"
+        })
+        ,', '
+    )
 };
 
 
